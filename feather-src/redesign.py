@@ -632,3 +632,20 @@ s = s.replace(needle, '''
             dlsignShowInstall = true''')
 p.write_text(s, encoding="utf-8")
 print("DLSIGN v10 install controls")
+
+# v11: try direct installation first; offer Safari only if iOS refuses.
+p = root / "Feather/Views/Library/Install/InstallPreviewView.swift"
+s = p.read_text(encoding="utf-8")
+old = '''            dlsignShowInstall = true'''
+new = '''            if let directURL = dlsignInstallLink {
+                let accepted = await UIApplication.shared.open(directURL)
+                if !accepted {
+                    dlsignShowInstall = true
+                }
+            } else {
+                dlsignShowInstall = true
+            }'''
+assert s.count(old) == 1
+s = s.replace(old, new)
+p.write_text(s, encoding="utf-8")
+print("DLSIGN v11: direct install attempt")
