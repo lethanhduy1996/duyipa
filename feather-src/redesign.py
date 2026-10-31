@@ -425,3 +425,112 @@ compute.write_text(c,encoding="utf-8")
 assert c.count('comps.scheme = self.getServerMethod() == 1 ? "http" : "https"')==5
 assert 'window.location="\(iTunesLink)"' in c
 print("v7: consistent local URL schemes and first-party manifest redirect.")
+
+
+# v8: DLSIGN custom HTTPS installation server.
+# Upload signed IPA only, never certificate material; token is held in memory.
+installView=root/"Feather/Views/Library/Install/InstallPreviewView.swift"
+v=installView.read_text(encoding="utf-8")
+anchor='\t@State private var _isWebviewPresenting = false'
+assert v.count(anchor)==1
+v=v.replace(anchor,anchor+'''
+    @State private var dlsignToken = ""
+    @State private var dlsignAskToken = false
+    @State private var dlsignUploadInProgress = false
+    @State private var dlsignPackage: URL?
+    @State private var dlsignError: String?
+    private let dlsignServer = URL(string: "https://maychuduy.duyyle789.workers.dev")!
+''')
+anchor='\t\t.onReceive(viewModel.$status) { newStatus in'
+assert v.count(anchor)==1
+v=v.replace(anchor,'''
+        .alert("DLSIGN - Máy chủ HTTPS", isPresented: $dlsignAskToken) {
+            SecureField("UPLOAD_TOKEN", text: $dlsignToken)
+            Button("Hủy", role: .cancel) { }
+            Button("Tải IPA và cài đặt") {
+                Task { await dlsignUpload() }
+            }
+        } message: {
+            Text("Nhập UPLOAD_TOKEN đã tạo trong Cloudflare. Khóa chỉ giữ trong phiên này, không tải P12 lên máy chủ.")
+        }
+        .alert("Lỗi máy chủ DLSIGN", isPresented: Binding(
+            get: { dlsignError != nil },
+            set: { if !$0 { dlsignError = nil } }
+        )) {
+            Button("Thử lại") { dlsignAskToken = true }
+            Button("Đóng", role: .cancel) { }
+        } message: {
+            Text(dlsignError ?? "")
+        }
+'''+anchor)
+# Default server method 1 now selects the HTTPS upload flow.
+old='''\t\t\t\t\t} else if _serverMethod == 1 {
+\t\t\t\t\t\t_isWebviewPresenting = true
+\t\t\t\t\t}'''
+assert v.count(old)==1
+v=v.replace(old,'''                    } else if _serverMethod == 1 {
+                        dlsignAskToken = true
+                    }''')
+anchor='\tprivate func startInstallProgressPolling('
+assert v.count(anchor)==1
+v=v.replace(anchor,'''
+    @MainActor
+    private func dlsignUpload() async {
+        guard !dlsignUploadInProgress else { return }
+        guard let file = dlsignPackage ?? installer.packageUrl else {
+            dlsignError = "Chưa có IPA đã ký để tải lên."
+            return
+        }
+        let token = dlsignToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            dlsignError = "Bạn chưa nhập UPLOAD_TOKEN."
+            return
+        }
+        guard let identifier = app.identifier, let version = app.version,
+              let name = app.name else {
+            dlsignError = "IPA thiếu thông tin bundle ID, version hoặc tên."
+            return
+        }
+        dlsignUploadInProgress = true
+        defer { dlsignUploadInProgress = false }
+        do {
+            var request = URLRequest(url: dlsignServer.appendingPathComponent("api/upload"))
+            request.httpMethod = "POST"
+            request.setValue("Bearer \\(token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.setValue(identifier, forHTTPHeaderField: "X-Bundle-Id")
+            request.setValue(version, forHTTPHeaderField: "X-App-Version")
+            request.setValue(name, forHTTPHeaderField: "X-App-Name")
+            request.timeoutInterval = 180
+            let (data, response) = try await URLSession.shared.upload(for: request, fromFile: file)
+            guard let http = response as? HTTPURLResponse else {
+                throw NSError(domain: "DLSIGN", code: 1, userInfo: [NSLocalizedDescriptionKey: "Không nhận được phản hồi HTTP."])
+            }
+            guard (200...299).contains(http.statusCode) else {
+                let detail = String(data: data, encoding: .utf8) ?? "Không rõ lỗi"
+                throw NSError(domain: "DLSIGN", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \\(http.statusCode): \\(detail)"])
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let page = json["page"] as? String,
+                  let pageURL = URL(string: page),
+                  pageURL.scheme == "https",
+                  pageURL.host == dlsignServer.host else {
+                throw NSError(domain: "DLSIGN", code: 2, userInfo: [NSLocalizedDescriptionKey: "Máy chủ trả về liên kết không hợp lệ."])
+            }
+            dlsignToken = ""
+            UIApplication.shared.open(pageURL)
+        } catch {
+            dlsignError = error.localizedDescription
+        }
+    }
+
+'''+anchor)
+# Keep archived URL alive after archiving, before status ready.
+anchor='''\t\t\t\t\t\t\tinstaller.packageUrl = packageUrl
+\t\t\t\t\t\t\tviewModel.status = .ready'''
+assert v.count(anchor)==1
+v=v.replace(anchor,'''                            installer.packageUrl = packageUrl
+                            dlsignPackage = packageUrl
+                            viewModel.status = .ready''')
+installView.write_text(v,encoding="utf-8")
+print("v8: custom HTTPS upload with per-install token prompt and explicit errors.")
