@@ -543,3 +543,50 @@ assert src.count('            UIApplication.shared.open(pageURL)')==1
 src=src.replace('            UIApplication.shared.open(pageURL)','            await UIApplication.shared.open(pageURL)')
 p.write_text(src,encoding="utf-8")
 print("v8.1: await UIKit async open.")
+# DLSIGN v9 - One-tap HTTPS install
+p = root / "Feather/Views/Library/Install/InstallPreviewView.swift"
+src = p.read_text(encoding="utf-8")
+
+# Remove token input dialog
+start = src.index('        .alert("DLSIGN - Máy chủ HTTPS"')
+end = src.index('        .alert("Lỗi máy chủ DLSIGN"', start)
+src = src[:start] + src[end:]
+
+# Start upload directly when installing
+src = src.replace(
+    '                        dlsignAskToken = true',
+    '                        Task { await dlsignUpload() }'
+)
+src = src.replace(
+    '            Button("Thử lại") { dlsignAskToken = true }',
+    '            Button("Thử lại") { Task { await dlsignUpload() } }'
+)
+
+# Remove token state
+src = src.replace('    @State private var dlsignToken = ""\n', '')
+src = src.replace('    @State private var dlsignAskToken = false\n', '')
+
+# Remove token validation
+start = src.index('        let token = dlsignToken.trimmingCharacters')
+end = src.index('        guard let identifier', start)
+src = src[:start] + src[end:]
+
+# Remove authorization header
+src = "\n".join(
+    line for line in src.split("\n")
+    if not (
+        'Authorization' in line
+        and 'Bearer' in line
+    )
+)
+
+# Remove token cleanup
+src = src.replace('            dlsignToken = ""\n', '')
+
+assert 'dlsignToken' not in src
+assert 'dlsignAskToken' not in src
+
+p.write_text(src, encoding="utf-8")
+print("DLSIGN v9: One-tap HTTPS installation enabled")
+
+
