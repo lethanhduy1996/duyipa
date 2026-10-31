@@ -1,4 +1,4 @@
-name: Build DLSIGN From Feather Source
+name: DLSIGN Studio - New UI From Feather Source
 on:
   workflow_dispatch:
   push:
@@ -33,6 +33,7 @@ jobs:
       - name: Prepare DLSIGN branding and attribution
         run: |
           python3 feather-src/brand.py "$RUNNER_TEMP/Feather"
+          python3 feather-src/redesign.py "$RUNNER_TEMP/Feather"
           swift feather-src/make_icon.swift "$RUNNER_TEMP/Feather/Feather/Resources/AppIcon.icon/Assets/feather.png"
       - name: Remove stale project lockfile identities
         run: |
@@ -83,27 +84,54 @@ jobs:
             -jobs 2 \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee "$GITHUB_WORKSPACE/feather-build.log"
-      - name: Package and validate DLSIGN IPA
+      - name: Package real built app, not Feather.app symlink
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/DLSIGN-Feather-Build/Build/Products/Release-iphoneos"
           APP="$ROOT/Feather.app"
-          test -d "$APP"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist"
-          python3 - "$APP/Info.plist" <<'PY'
+          test -e "$APP/Info.plist"
+          APP_REAL="$(python3 - "$APP" <<'PY'
+          import sys
+          from pathlib import Path
+          app=Path(sys.argv[1]).resolve(strict=True)
+          assert app.is_dir()
+          print(app)
+          PY
+          )"
+          echo "Built application resolves to: $APP_REAL"
+          python3 - "$APP_REAL" <<'PY'
           import plistlib,sys
-          with open(sys.argv[1],'rb') as f: info=plistlib.load(f)
-          assert info['CFBundleDisplayName']=='DLSIGN', info.get('CFBundleDisplayName')
-          assert info['CFBundleIdentifier']=='vn.dlsign.feather', info['CFBundleIdentifier']
-          print('Verified Feather-based DLSIGN: display name + bundle identifier.')
+          from pathlib import Path
+          app=Path(sys.argv[1])
+          with (app/'Info.plist').open('rb') as f: info=plistlib.load(f)
+          assert info['CFBundleDisplayName']=='DLSIGN'
+          assert info['CFBundleIdentifier']=='vn.dlsign.feather'
+          exe=app/info.get('CFBundleExecutable','Feather')
+          assert exe.is_file() and exe.stat().st_size>100000, f"Missing executable: {exe}"
+          print('Valid app executable:',exe,exe.stat().st_size)
           PY
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/Feather.app"
+          ditto "$APP_REAL" "$RUNNER_TEMP/ipa/Payload/Feather.app"
+          test -f "$RUNNER_TEMP/ipa/Payload/Feather.app/Info.plist"
           cd "$RUNNER_TEMP/ipa"
-          ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa"
-          test -s "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa"
-          unzip -t "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa" | tail -n 2
+          ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/DLSIGN-Studio-unsigned.ipa"
+          python3 - "$GITHUB_WORKSPACE/DLSIGN-Studio-unsigned.ipa" <<'PY'
+          import sys,zipfile,plistlib
+          from pathlib import Path
+          ipa=Path(sys.argv[1])
+          assert ipa.stat().st_size>1000000, "IPA suspiciously small"
+          with zipfile.ZipFile(ipa) as z:
+              assert z.testzip() is None
+              names=z.namelist()
+              assert 'Payload/Feather.app/Info.plist' in names
+              p=plistlib.loads(z.read('Payload/Feather.app/Info.plist'))
+              exe='Payload/Feather.app/'+p.get('CFBundleExecutable','Feather')
+              assert exe in names, "Executable not archived"
+              assert z.getinfo(exe).file_size>100000
+              assert p['CFBundleIdentifier']=='vn.dlsign.feather'
+              assert p['CFBundleDisplayName']=='DLSIGN'
+              print("Verified IPA:",ipa.stat().st_size,"bytes, executable",z.getinfo(exe).file_size)
+          PY
       - name: Include license and source provenance
         run: |
           cp "$RUNNER_TEMP/Feather/LICENSE" "$GITHUB_WORKSPACE/FEATHER-GPL-3.0-LICENSE.txt"
@@ -111,9 +139,9 @@ jobs:
       - name: Upload DLSIGN IPA and required license
         uses: actions/upload-artifact@v4
         with:
-          name: DLSIGN-Feather-unsigned-IPA
+          name: DLSIGN-Studio-unsigned-IPA
           path: |
-            DLSIGN-Feather-unsigned.ipa
+            DLSIGN-Studio-unsigned.ipa
             FEATHER-GPL-3.0-LICENSE.txt
             DLSIGN-Feather-SOURCE-README.md
           if-no-files-found: error
