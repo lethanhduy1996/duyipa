@@ -367,3 +367,21 @@ settingsText=settingsText.replace('\tprivate let _donationsUrl = "https://github
 assert "SettingsDonationCellView" not in settingsText
 settingsFile.write_text(settingsText,encoding="utf-8")
 print("Removed donation UI; GPL attribution preserved.")
+
+
+# User-requested first-install defaults matching Settings screenshot.
+# 0=Server installer, 1=Semi Local server, true=localhost only.
+# AppStorage persists any changes made later by the user.
+serverSettings=root/"Feather/Views/Settings/Installation/Server & SSL/ServerView.swift"
+serverSource=serverSettings.read_text(encoding="utf-8")
+assert serverSource.count('@AppStorage("Feather.ipFix") private var _ipFix: Bool = false')==1
+assert serverSource.count('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0')==1
+serverSource=serverSource.replace('@AppStorage("Feather.ipFix") private var _ipFix: Bool = false','@AppStorage("Feather.ipFix") private var _ipFix: Bool = true')
+serverSource=serverSource.replace('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0','@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 1')
+serverSettings.write_text(serverSource,encoding="utf-8")
+for rel in ["Feather/Views/Library/Install/InstallPreviewView.swift"]:
+    target=root/rel
+    source=target.read_text(encoding="utf-8")
+    assert source.count('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0')==1
+    target.write_text(source.replace('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0','@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 1'),encoding="utf-8")
+print("First-install defaults: Server, Semi Local, localhost ON.")
