@@ -352,3 +352,18 @@ assert 'switch selectedTab' in shellSource
 assert 'ContentUnavailableView' not in lib[lib.find('.searchable(text: $_searchText'):lib.find('.toolbar {',lib.find('.searchable(text: $_searchText'))]
 assert 'Không có ứng dụng' in lib
 print("DLSIGN v2 layout checks: one tab dock, empty state flows below hero, no overlay.")
+
+
+# Remove the visible donation/support section from Settings.
+# Retain original Feather GPL attribution and About information.
+settingsFile=root/"Feather/Views/Settings/SettingsView.swift"
+settingsText=settingsFile.read_text(encoding="utf-8")
+donationBlock='''\t\t\t\t#if !NIGHTLY && !DEBUG
+\t\t\t\t\tSettingsDonationCellView(site: _donationsUrl)
+\t\t\t\t#endif'''
+assert settingsText.count(donationBlock)==1, "Donation section changed"
+settingsText=settingsText.replace(donationBlock,"")
+settingsText=settingsText.replace('\tprivate let _donationsUrl = "https://github.com/sponsors/claration"\n',"")
+assert "SettingsDonationCellView" not in settingsText
+settingsFile.write_text(settingsText,encoding="utf-8")
+print("Removed donation UI; GPL attribution preserved.")
