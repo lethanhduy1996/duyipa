@@ -41,14 +41,22 @@ struct VariedTabbarView: View {
             DLStyle.bg.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                TabView(selection: $selectedTab) {
-                    ForEach(destinations, id: \.self) { tab in
-                        TabEnum.view(for: tab)
-                            .tabItem { Label(tab.title, systemImage: tab.icon) }
-                            .tag(tab)
+                // Do not embed a native TabView behind the custom dock.
+                // iOS 26 draws a native tab strip even when toolbar(.hidden)
+                // is set on this nested TabView, causing two bottom bars.
+                ZStack {
+                    switch selectedTab {
+                    case .library:
+                        TabEnum.view(for: .library)
+                    case .sources:
+                        TabEnum.view(for: .sources)
+                    case .certificates:
+                        TabEnum.view(for: .certificates)
+                    case .settings:
+                        TabEnum.view(for: .settings)
                     }
                 }
-                .toolbar(.hidden, for: .tabBar)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 dock
             }
         }
@@ -280,3 +288,67 @@ patch(sources,'NBNavigationView(.localized("Sources")) {','NBNavigationView("Kho
 app="Feather/FeatherApp.swift"
 patch(app,'UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#848ef9"','UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#40EBC5"')
 print("DLSIGN redesign applied; native Feather signing and installation engine unchanged.")
+
+
+# Fix empty library layout: the original Feather empty-state is an overlay
+# drawn in the middle of the entire list, including the new DLSIGN hero card.
+# Move it into an actual list section with normal layout flow instead.
+emptySection = '''
+                if _filteredSignedApps.isEmpty && _filteredImportedApps.isEmpty {
+                    Section {
+                        VStack(spacing: 13) {
+                            Image(systemName: "shippingbox")
+                                .font(.system(size: 42, weight: .light))
+                                .foregroundStyle(Color(red: 0.25, green: 0.92, blue: 0.77))
+                                .frame(height: 58)
+                            Text("Không có ứng dụng")
+                                .font(.system(size: 19, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                            Text("Bắt đầu bằng cách nhập tệp IPA đầu tiên của bạn.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button {
+                                _isImportingPresenting = true
+                            } label: {
+                                Label("Nhập IPA", systemImage: "plus")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .padding(.horizontal, 22)
+                                    .frame(height: 40)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(red: 0.25, green: 0.92, blue: 0.77))
+                            .foregroundStyle(Color(red: 0.035, green: 0.055, blue: 0.095))
+                            .padding(.top, 5)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 34)
+                        .listRowBackground(Color.clear)
+                    }
+                }
+'''
+libraryPath = root/"Feather/Views/Library/LibraryView.swift"
+lib = libraryPath.read_text(encoding="utf-8")
+# Inject immediately before the list's trailing brace, rather than overlay
+# on top of the imported IPA card.
+anchor = '\t\t\t}\n\t\t\t.searchable(text: $_searchText, placement: .platform())'
+assert lib.count(anchor) == 1, "List boundary changed"
+lib = lib.replace(anchor, emptySection + anchor)
+overlayStart = lib.find('\t\t\t.overlay {', lib.find('.searchable(text: $_searchText'))
+toolbarStart = lib.find('\t\t\t.toolbar {', overlayStart)
+assert overlayStart >= 0 and toolbarStart > overlayStart, "Empty overlay boundaries changed"
+removed = lib[overlayStart:toolbarStart]
+assert 'ContentUnavailableView' in removed and '_filteredImportedApps.isEmpty' in removed, "Wrong overlay"
+lib = lib[:overlayStart] + lib[toolbarStart:]
+libraryPath.write_text(lib, encoding="utf-8")
+
+# Build-time assertions, to prevent reverting the double tab bar and overlap.
+shellSource = (root/"Feather/Views/TabView/VariedTabbarView.swift").read_text()
+assert 'TabView(selection:' not in shellSource
+assert 'dock' in shellSource
+assert 'switch selectedTab' in shellSource
+assert 'ContentUnavailableView' not in lib[lib.find('.searchable(text: $_searchText'):lib.find('.toolbar {',lib.find('.searchable(text: $_searchText'))]
+assert 'Không có ứng dụng' in lib
+print("DLSIGN v2 layout checks: one tab dock, empty state flows below hero, no overlay.")
