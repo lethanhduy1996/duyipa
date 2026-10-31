@@ -1,0 +1,100 @@
+name: DLSIGN Feather Compatibility IPA
+on:
+  push:
+    branches: [dlsign-feather-build]
+    paths:
+      - '.github/workflows/dlsign-feather-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout build files
+        uses: actions/checkout@v4
+      - name: Download Feather official release
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --retry 3 --fail --location --show-error --silent \
+            "https://github.com/claration/feather/releases/download/v2.9.0/Feather.ipa" \
+            -o Feather-2.9.0-official.ipa
+          test -s Feather-2.9.0-official.ipa
+          unzip -t Feather-2.9.0-official.ipa | tail -2
+      - name: Apply DLSIGN name and bundle identifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib, shutil, zipfile
+          ipa = Path('Feather-2.9.0-official.ipa')
+          out = Path('DLSIGN-Feather-compat-unsigned.ipa')
+          root = Path('working')
+          root.mkdir(exist_ok=True)
+          with zipfile.ZipFile(ipa) as arc:
+              for item in arc.infolist():
+                  path = Path(item.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise RuntimeError('Unsafe IPA archive entry')
+              arc.extractall(root)
+          apps = list((root / 'Payload').glob('*.app'))
+          if len(apps) != 1:
+              raise RuntimeError('Expected one application; found ' + str(len(apps)))
+          app = apps[0]
+          manifest = app / 'Info.plist'
+          with manifest.open('rb') as f:
+              data = plistlib.load(f)
+          data['CFBundleDisplayName'] = 'DLSIGN'
+          data['CFBundleName'] = 'DLSIGN'
+          data['CFBundleIdentifier'] = 'vn.dlsign.feather'
+          with manifest.open('wb') as f:
+              plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+          # Original signature and provisioning cannot survive a bundle ID change.
+          shutil.rmtree(app / '_CodeSignature', ignore_errors=True)
+          (app / 'embedded.mobileprovision').unlink(missing_ok=True)
+          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as arc:
+              for f in root.rglob('*'):
+                  if f.is_file():
+                      arc.write(f, f.relative_to(root))
+          with zipfile.ZipFile(out) as arc:
+              assert arc.testzip() is None, 'Invalid IPA ZIP'
+              with arc.open('Payload/' + app.name + '/Info.plist') as p:
+                  result = plistlib.load(p)
+              assert result['CFBundleDisplayName'] == 'DLSIGN'
+              assert result['CFBundleIdentifier'] == 'vn.dlsign.feather'
+          print('SUCCESS: DLSIGN Feather compatibility IPA:', out.stat().st_size, 'bytes')
+          PY
+      - name: Add upstream GPL license and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --retry 3 --fail --location --show-error --silent \
+            "https://raw.githubusercontent.com/claration/feather/7078b053c0af262809a48e4d3898d42b0d35fedf/LICENSE" \
+            -o LICENSE-FEATHER-GPL-3.0.txt
+          cat > BUILD-INFO.txt <<'EOF'
+          DLSIGN - Feather Compatibility edition
+          This is the officially released Feather v2.9.0 IPA with only
+          Info.plist branding changed to display name DLSIGN and
+          bundle identifier vn.dlsign.feather. This is NOT rebuilt
+          from Feather source, and the Feather icon and user interface remain.
+          Original IPA: https://github.com/claration/feather/releases/tag/v2.9.0
+          Feather source: https://github.com/claration/feather
+          License: GPL-3.0. You must provide the corresponding Feather source
+          and modification script to all recipients of the modified binary.
+          This artifact is UNSIGNED, requires signing to install on iPhone.
+          Never upload your private P12/password to this CI workflow.
+          EOF
+      - name: Upload IPA and attribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: DLSIGN-Feather-compat-unsigned
+          path: |
+            DLSIGN-Feather-compat-unsigned.ipa
+            BUILD-INFO.txt
+            LICENSE-FEATHER-GPL-3.0.txt
+          if-no-files-found: error
