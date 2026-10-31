@@ -534,3 +534,12 @@ v=v.replace(anchor,'''                            installer.packageUrl = package
                             viewModel.status = .ready''')
 installView.write_text(v,encoding="utf-8")
 print("v8: custom HTTPS upload with per-install token prompt and explicit errors.")
+
+
+# v8.1 Swift concurrency fix: UIKit async open requires await in async context.
+p=root/"Feather/Views/Library/Install/InstallPreviewView.swift"
+src=p.read_text(encoding="utf-8")
+assert src.count('            UIApplication.shared.open(pageURL)')==1
+src=src.replace('            UIApplication.shared.open(pageURL)','            await UIApplication.shared.open(pageURL)')
+p.write_text(src,encoding="utf-8")
+print("v8.1: await UIKit async open.")
