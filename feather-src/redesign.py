@@ -385,3 +385,47 @@ for rel in ["Feather/Views/Library/Install/InstallPreviewView.swift"]:
     assert source.count('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0')==1
     target.write_text(source.replace('@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0','@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 1'),encoding="utf-8")
 print("First-install defaults: Server, Semi Local, localhost ON.")
+
+
+# Reliability: avoid silently swallowing server initialization errors.
+serverInstaller=root/"Feather/Backend/Server/ServerInstaller.swift"
+serverText=serverInstaller.read_text(encoding="utf-8")
+assert serverText.count('self._server = try? setupApp(port: port)')==1
+serverText=serverText.replace('self._server = try? setupApp(port: port)','self._server = try setupApp(port: port)')
+serverInstaller.write_text(serverText,encoding="utf-8")
+
+# Make the installation screen explain localhost failures rather than opening
+# an unavailable 127.0.0.1 endpoint without any diagnostic.
+installView=root/"Feather/Views/Library/Install/InstallPreviewView.swift"
+installText=installView.read_text(encoding="utf-8")
+old='''\t\t\t\t\t} else if _serverMethod == 1 {
+\t\t\t\t\t\t_isWebviewPresenting = true
+\t\t\t\t\t}'''
+new='''\t\t\t\t\t} else if _serverMethod == 1 {
+                        // Local installation requires the app-hosted server to
+                        // be reachable. Report a failure instead of a blank web view.
+                        let endpoint = installer.pageEndpoint
+                        Task {
+                            do {
+                                var request = URLRequest(url: endpoint)
+                                request.timeoutInterval = 5
+                                let (_, response) = try await URLSession.shared.data(for: request)
+                                guard let http = response as? HTTPURLResponse,
+                                      (200...299).contains(http.statusCode) else {
+                                    throw URLError(.badServerResponse)
+                                }
+                                await MainActor.run { _isWebviewPresenting = true }
+                            } catch {
+                                await MainActor.run {
+                                    UIAlertController.showAlertWithOk(
+                                        title: "DLSIGN - Máy chủ cài đặt",
+                                        message: "Không thể kết nối máy chủ cài IPA trên iPhone. Hãy giữ DLSIGN đang mở, thử lại hoặc đổi kiểu cài đặt trong Cài đặt. Chi tiết: \\(error.localizedDescription)"
+                                    )
+                                }
+                            }
+                        }
+\t\t\t\t\t}'''
+assert installText.count(old)==1, "Semi-local install anchor changed"
+installText=installText.replace(old,new)
+installView.write_text(installText,encoding="utf-8")
+print("Local installer: server setup errors no longer swallowed; endpoint checked before webview.")
