@@ -588,3 +588,47 @@ assert 'dlsignAskToken' not in src
 
 p.write_text(src, encoding="utf-8")
 print("DLSIGN v9: One-tap HTTPS installation enabled")
+
+# DLSIGN v10: show installation controls in the app after upload.
+p = root / "Feather/Views/Library/Install/InstallPreviewView.swift"
+s = p.read_text(encoding="utf-8")
+needle = '    @State private var dlsignError: String?'
+assert s.count(needle) == 1
+s = s.replace(needle, needle + '''
+    @State private var dlsignInstallLink: URL?
+    @State private var dlsignFallbackPage: URL?
+    @State private var dlsignShowInstall = false
+''')
+needle = '        .alert("Lỗi máy chủ DLSIGN"'
+assert s.count(needle) == 1
+s = s.replace(needle, '''
+        .confirmationDialog("DLSIGN - Cài đặt IPA", isPresented: $dlsignShowInstall, titleVisibility: .visible) {
+            Button("Cài đặt ngay") {
+                if let url = dlsignInstallLink {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Mở bằng Safari") {
+                if let url = dlsignFallbackPage {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Hủy", role: .cancel) {}
+        } message: {
+            Text("IPA đã tải lên. iOS có thể yêu cầu xác nhận cài đặt.")
+        }
+''' + needle)
+needle = '            await UIApplication.shared.open(pageURL)'
+assert s.count(needle) == 1
+s = s.replace(needle, '''
+            dlsignFallbackPage = pageURL
+            if let install = json["install"] as? String,
+               let installURL = URL(string: install),
+               installURL.scheme == "itms-services" {
+                dlsignInstallLink = installURL
+            } else {
+                dlsignInstallLink = nil
+            }
+            dlsignShowInstall = true''')
+p.write_text(s, encoding="utf-8")
+print("DLSIGN v10 install controls")
