@@ -1,0 +1,128 @@
+name: Build DLSIGN From Feather Source
+on:
+  workflow_dispatch:
+  push:
+    branches: [dlsign-feather-build]
+    paths:
+      - 'feather-src/**'
+      - '.github/workflows/dlsign-feather-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@v4
+      - name: Select stable Xcode 26.6 (avoids 26.3 package graph crash)
+        run: |
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
+      - name: Fetch pinned Feather source and its submodules
+        run: |
+          git clone --filter=blob:none https://github.com/claration/feather.git "$RUNNER_TEMP/Feather"
+          cd "$RUNNER_TEMP/Feather"
+          git checkout --detach 7078b053c0af262809a48e4d3898d42b0d35fedf
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git rev-parse HEAD
+      - name: Prepare DLSIGN branding and attribution
+        run: |
+          python3 feather-src/brand.py "$RUNNER_TEMP/Feather"
+          swift feather-src/make_icon.swift "$RUNNER_TEMP/Feather/Feather/Resources/AppIcon.icon/Assets/feather.png"
+      - name: Remove stale project lockfile identities
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/Feather"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          project = Path("Feather.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+          workspace = Path("Feather.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+          if project.exists() and workspace.exists():
+              old=len(json.loads(project.read_text())["pins"])
+              new=len(json.loads(workspace.read_text())["pins"])
+              assert old >= new
+              project.write_text(workspace.read_text())
+              print(f"Aligned stale project SwiftPM pins: {old} -> {new}")
+          PY
+          for pkg in NimbleKit AltSourceKit Zsign IDeviceKitten; do
+            if [ -d "$pkg" ]; then
+              find "$pkg" -name Package.resolved -type f -print -delete
+            fi
+          done
+      - name: Resolve all Feather SwiftPM packages first
+        run: |
+          cd "$RUNNER_TEMP/Feather"
+          set -o pipefail
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project Feather.xcodeproj \
+            -scheme Feather \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/DLSIGN-Package-Cache" \
+            -skipPackagePluginValidation 2>&1 | tee "$GITHUB_WORKSPACE/feather-resolve.log"
+
+      - name: Build Feather-based DLSIGN unsigned iOS app
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/Feather"
+          xcodebuild \
+            -project Feather.xcodeproj \
+            -scheme Feather \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DLSIGN-Feather-Build" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/DLSIGN-Package-Cache" \
+            -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/feather-build.log"
+      - name: Package and validate DLSIGN IPA
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/DLSIGN-Feather-Build/Build/Products/Release-iphoneos"
+          APP="$ROOT/Feather.app"
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist"
+          python3 - "$APP/Info.plist" <<'PY'
+          import plistlib,sys
+          with open(sys.argv[1],'rb') as f: info=plistlib.load(f)
+          assert info['CFBundleDisplayName']=='DLSIGN', info.get('CFBundleDisplayName')
+          assert info['CFBundleIdentifier']=='vn.dlsign.feather', info['CFBundleIdentifier']
+          print('Verified Feather-based DLSIGN: display name + bundle identifier.')
+          PY
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/Feather.app"
+          cd "$RUNNER_TEMP/ipa"
+          ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa"
+          test -s "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa"
+          unzip -t "$GITHUB_WORKSPACE/DLSIGN-Feather-unsigned.ipa" | tail -n 2
+      - name: Include license and source provenance
+        run: |
+          cp "$RUNNER_TEMP/Feather/LICENSE" "$GITHUB_WORKSPACE/FEATHER-GPL-3.0-LICENSE.txt"
+          cp feather-src/README.md "$GITHUB_WORKSPACE/DLSIGN-Feather-SOURCE-README.md"
+      - name: Upload DLSIGN IPA and required license
+        uses: actions/upload-artifact@v4
+        with:
+          name: DLSIGN-Feather-unsigned-IPA
+          path: |
+            DLSIGN-Feather-unsigned.ipa
+            FEATHER-GPL-3.0-LICENSE.txt
+            DLSIGN-Feather-SOURCE-README.md
+          if-no-files-found: error
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DLSIGN-Feather-build-log
+          path: |
+            feather-build.log
+            feather-resolve.log
+          if-no-files-found: ignore
