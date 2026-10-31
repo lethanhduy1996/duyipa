@@ -649,3 +649,18 @@ assert s.count(old) == 1
 s = s.replace(old, new)
 p.write_text(s, encoding="utf-8")
 print("DLSIGN v11: direct install attempt")
+
+# v12: restore Feather's original on-device installation route as the default.
+# Do not upload the signed IPA to Cloudflare when the user taps Install.
+p = root / "Feather/Views/Library/Install/InstallPreviewView.swift"
+s = p.read_text(encoding="utf-8")
+old = '''                    } else if _serverMethod == 1 {
+                        Task { await dlsignUpload() }
+                    }'''
+new = '''                    } else if _serverMethod == 1 {
+                        _isWebviewPresenting = true
+                    }'''
+assert s.count(old) == 1, "DLSIGN v12: local installation branch not found"
+s = s.replace(old, new)
+p.write_text(s, encoding="utf-8")
+print("DLSIGN v12: Feather local install route restored; Cloudflare upload no longer default")
