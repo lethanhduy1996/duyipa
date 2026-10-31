@@ -408,3 +408,20 @@ assert installText.count('try! ServerInstaller(app: app, viewModel: viewModel)')
 assert 'URLSession.shared.data(for:' not in installText
 assert installText.count('_isWebviewPresenting = true')==1
 print("v6: reverted TLS preflight regression; retained original Feather semi-local install.")
+
+
+# v7: do not mix HTTPS image URLs with the semi-local HTTP server.
+# Also remove the dependency on the third-party manifest generator for
+# the semi-local HTML redirect: Feather already serves its own manifest.
+compute=root/"Feather/Backend/Server/ServerInstaller+Compute.swift"
+c=compute.read_text(encoding="utf-8")
+assert c.count('comps.scheme = "https"')==2
+c=c.replace('comps.scheme = "https"','comps.scheme = self.getServerMethod() == 1 ? "http" : "https"')
+# The external manifest service may be unavailable and does not control
+# the local server. Use Feather's own generated manifest for the redirect.
+assert c.count('window.location="\(iTunesLinkExternal)"')==1
+c=c.replace('window.location="\(iTunesLinkExternal)"','window.location="\(iTunesLink)"')
+compute.write_text(c,encoding="utf-8")
+assert c.count('comps.scheme = self.getServerMethod() == 1 ? "http" : "https"')==5
+assert 'window.location="\(iTunesLink)"' in c
+print("v7: consistent local URL schemes and first-party manifest redirect.")
