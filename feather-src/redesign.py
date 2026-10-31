@@ -588,5 +588,3 @@ assert 'dlsignAskToken' not in src
 
 p.write_text(src, encoding="utf-8")
 print("DLSIGN v9: One-tap HTTPS installation enabled")
-
-
