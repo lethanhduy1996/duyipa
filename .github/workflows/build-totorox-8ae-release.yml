@@ -1,0 +1,84 @@
+name: Totorox 8ae Offline - Release IPA
+
+on:
+  push:
+    branches: [build/totorox-8ae-offline-fix-20261118]
+    paths: [.github/workflows/build-totorox-8ae-release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repair script
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Checkout exact offline Totorox source
+        uses: actions/checkout@v4
+        with:
+          repository: VannHoc/Totorox
+          ref: 8ae5daa8e569477c6a5ca92020e2a1313410cd75
+          path: totorox
+          persist-credentials: false
+
+      - name: Apply and verify source changes
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "8ae5daa8e569477c6a5ca92020e2a1313410cd75"
+          python3 ../builder/scripts/patch_totorox_8ae_offline.py
+          git diff --check
+          git diff --stat
+
+      - name: Generate Xcode project
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build unsigned Release IPA
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Totorox.xcodeproj -scheme Totorox \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/OfflineDerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Verify, package, checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/OfflineDerivedData/Build/Products/Release-iphoneos/Totorox.app"
+          test -f "$APP/Totorox"
+          test -f "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          mkdir -p "$RUNNER_TEMP/pkg/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/pkg/Payload/"
+          (cd "$RUNNER_TEMP/pkg" && zip -qry "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa" > SHA256SUMS.txt
+          cp SHA256SUMS.txt "$GITHUB_WORKSPACE/SHA256SUMS.txt"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-8ae-OfflineFix-unsigned-ipa
+          path: |
+            Totorox-8ae-OfflineFix-unsigned.ipa
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
