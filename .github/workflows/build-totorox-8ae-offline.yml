@@ -1,0 +1,122 @@
+name: Totorox 8ae Offline - Tests and IPA
+
+on:
+  push:
+    branches:
+      - build/totorox-8ae-offline-fix-20261118
+    paths:
+      - scripts/patch_totorox_8ae_offline.py
+      - .github/workflows/build-totorox-8ae-offline.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    name: Test original offline engine and build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - name: Checkout patch
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Checkout exact upstream source commit
+        uses: actions/checkout@v4
+        with:
+          repository: VannHoc/Totorox
+          ref: 8ae5daa8e569477c6a5ca92020e2a1313410cd75
+          path: totorox
+          persist-credentials: false
+
+      - name: Apply isolated offline engine fixes
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "8ae5daa8e569477c6a5ca92020e2a1313410cd75"
+          python3 ../builder/scripts/patch_totorox_8ae_offline.py
+          git diff --check
+          git diff --stat
+          ! grep -R -n -E 'LicenseManager|APIService.shared|UDID' Totorox/engine/AovModMergerEngine.swift
+
+      - name: Generate Xcode project
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -list -project Totorox.xcodeproj
+
+      - name: Run XCTest on available iPhone simulator
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIM_ID="$(xcrun simctl list devices available | grep -i 'iPhone' | head -n 1 | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' || true)"
+          test -n "$SIM_ID" || { echo "::error::No iOS Simulator found"; exit 1; }
+          echo "Testing simulator: $SIM_ID"
+          xcodebuild test \
+            -project Totorox.xcodeproj \
+            -scheme Totorox \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$GITHUB_WORKSPACE/TotoroxOfflineTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build unsigned iPhone Release app
+        working-directory: totorox
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Totorox.xcodeproj \
+            -scheme Totorox \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/OfflineDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package and verify unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/OfflineDerivedData/Build/Products/Release-iphoneos/Totorox.app"
+          test -f "$APP/Info.plist"
+          test -f "$APP/Totorox"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          mkdir -p "$RUNNER_TEMP/OfflinePayload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/OfflinePayload/Payload/"
+          (cd "$RUNNER_TEMP/OfflinePayload" && zip -qry "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/Totorox-8ae-OfflineFix-unsigned.ipa" > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
+
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-8ae-OfflineFix-unsigned-ipa
+          path: |
+            Totorox-8ae-OfflineFix-unsigned.ipa
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload XCTest result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-8ae-OfflineFix-XCTest
+          path: TotoroxOfflineTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 10
