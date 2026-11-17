@@ -1,0 +1,86 @@
+name: DuyFiles Local - Build Unsigned IPA
+
+on:
+  push:
+    branches:
+      - build/offline-local-files-20261118
+    paths:
+      - .github/workflows/build-duyfiles-local.yml
+      - offline-local-files/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build offline iOS file manager
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout this branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate offline-only source and install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          test -f offline-local-files/Sources/DuyFilesLocalApp.swift
+          test -f offline-local-files/project.yml
+          test -f offline-local-files/Info.plist
+          if grep -Ein 'LicenseManager|RedeemCode|UDID|authToken|https?://' offline-local-files/Sources/*.swift; then
+            echo "::error::Offline-only source contains an unexpected authorization or network reference."
+            exit 1
+          fi
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: offline-local-files
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          xcodebuild -list -project DuyFilesLocal.xcodeproj
+
+      - name: Build unsigned Release application
+        working-directory: offline-local-files
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project DuyFilesLocal.xcodeproj \
+            -scheme DuyFilesLocal \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DuyFilesDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Verify bundle and package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/DuyFilesDerivedData/Build/Products/Release-iphoneos/DuyFilesLocal.app"
+          test -f "$APP/Info.plist"
+          test -f "$APP/DuyFilesLocal"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "com.duyl6304.DuyFilesLocal"
+          mkdir -p "$RUNNER_TEMP/duyfiles_ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/duyfiles_ipa/Payload/"
+          (cd "$RUNNER_TEMP/duyfiles_ipa" && zip -qry "$GITHUB_WORKSPACE/DuyFilesLocal-1.0-unsigned.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/DuyFilesLocal-1.0-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/DuyFilesLocal-1.0-unsigned.ipa" | tee SHA256SUMS.txt
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuyFilesLocal-1.0-unsigned-ipa
+          path: |
+            DuyFilesLocal-1.0-unsigned.ipa
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
