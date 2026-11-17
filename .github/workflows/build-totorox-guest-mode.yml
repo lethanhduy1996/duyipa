@@ -1,0 +1,93 @@
+name: Totorox 2.0 - Guest UI Unsigned IPA
+
+on:
+  push:
+    branches:
+      - build/totorox-guest-mode-20261118
+    paths:
+      - .github/workflows/build-totorox-guest-mode.yml
+      - scripts/patch_totorox_guest.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    name: Build Totorox guest UI IPA
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Checkout patch tools
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Checkout Totorox source
+        uses: actions/checkout@v4
+        with:
+          repository: VannHoc/Totorox
+          ref: b7ae5aa707291ac9a1eb2469518576e7d9eda73c
+          path: totorox
+          persist-credentials: false
+
+      - name: Apply SettingsView and ContentView guest UI patch
+        working-directory: totorox
+        run: |
+          set -euo pipefail
+          python3 ../builder/scripts/patch_totorox_guest.py
+          git diff --check
+          git diff -- Totorox/views/SettingsView.swift Totorox/ContentView.swift
+
+      - name: Install XcodeGen and generate project
+        working-directory: totorox
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -list -project Totorox.xcodeproj
+
+      - name: Build unsigned Release app
+        working-directory: totorox
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Totorox.xcodeproj \
+            -scheme Totorox \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/TotoroxDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package and verify IPA structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/TotoroxDerivedData/Build/Products/Release-iphoneos/Totorox.app"
+          test -f "$APP/Info.plist"
+          test -f "$APP/Totorox"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          echo "Version: $VERSION"
+          echo "Bundle ID: $BUNDLE"
+          test "$VERSION" = "2.0"
+          mkdir -p "$RUNNER_TEMP/packaging/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/packaging/Payload/"
+          (cd "$RUNNER_TEMP/packaging" && zip -qry "$GITHUB_WORKSPACE/Totorox-2.0-GuestUI-unsigned.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/Totorox-2.0-GuestUI-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/Totorox-2.0-GuestUI-unsigned.ipa" > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-2.0-GuestUI-unsigned-ipa
+          path: |
+            Totorox-2.0-GuestUI-unsigned.ipa
+            SHA256SUMS.txt
+          retention-days: 30
+          if-no-files-found: error
