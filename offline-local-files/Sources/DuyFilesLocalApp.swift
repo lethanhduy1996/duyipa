@@ -44,8 +44,18 @@ struct LocalFileBrowser: View {
             List {
                 Section {
                     if entries.isEmpty {
-                        ContentUnavailableView("Chưa có tệp", systemImage: "folder",
-                                               description: Text("Nhập tệp hoặc tạo thư mục để bắt đầu."))
+                        VStack(spacing: 10) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.secondary)
+                            Text("Chưa có tệp")
+                                .font(.headline)
+                            Text("Nhập tệp hoặc tạo thư mục để bắt đầu.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
                     } else {
                         ForEach(entries) { entry in
                             Button {
