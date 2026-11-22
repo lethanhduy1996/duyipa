@@ -1,0 +1,78 @@
+name: Totorox Local - iOS unsigned IPA
+on:
+  push:
+    branches:
+      - totorox-local-build-20261122
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - name: Checkout local patch
+        uses: actions/checkout@v4
+      - name: Inspect Xcode
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Clone upstream source at inspected commit
+        run: |
+          git clone --depth 1 https://github.com/VannHoc/Totorox.git source
+          cd source
+          if [ "$(git rev-parse HEAD)" != "a1430f3726b9383cb6e5ecb8693caf9d886f23fe" ]; then
+            git fetch --depth 1 origin a1430f3726b9383cb6e5ecb8693caf9d886f23fe
+            git checkout --detach a1430f3726b9383cb6e5ecb8693caf9d886f23fe
+          fi
+          git rev-parse HEAD
+      - name: Apply Totorox Local patch
+        run: python3 local_patch/apply_local_mode.py source
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+      - name: Generate Xcode project
+        working-directory: source
+        run: |
+          xcodegen generate
+          xcodebuild -list -project Totorox.xcodeproj
+      - name: Compile iOS Simulator
+        working-directory: source
+        run: |
+          set -o pipefail
+          xcodebuild build -project Totorox.xcodeproj -scheme Totorox \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee ../ios-simulator-build.log
+      - name: Archive unsigned iOS device app
+        working-directory: source
+        run: |
+          set -o pipefail
+          xcodebuild archive -project Totorox.xcodeproj -scheme Totorox \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath "$(pwd)/TotoroxLocal.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee ../ios-device-archive.log
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R source/TotoroxLocal.xcarchive/Products/Applications/Totorox.app Payload/Totorox.app
+          zip -qr -9 Totorox-Local-unsigned.ipa Payload
+          ls -lh Totorox-Local-unsigned.ipa
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-Local-unsigned-IPA
+          path: Totorox-Local-unsigned.ipa
+          if-no-files-found: error
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Totorox-Local-Build-Logs
+          path: |
+            ios-simulator-build.log
+            ios-device-archive.log
+          if-no-files-found: ignore
