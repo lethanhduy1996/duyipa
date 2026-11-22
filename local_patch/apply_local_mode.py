@@ -80,6 +80,9 @@ def apply(root: Path) -> None:
     project = replace_exact(project,
         'bundleIdPrefix: com.apple.mobile',
         'bundleIdPrefix: com.totorox', 'bundle id prefix')
+    project = replace_exact(project,
+        'INFOPLIST_KEY_CFBundleDisplayName: Totorox',
+        'INFOPLIST_KEY_CFBundleDisplayName: Totorox Local', 'Xcode generated display name')
 
     info = info_file.read_text(encoding='utf-8')
     info = replace_exact(info,
