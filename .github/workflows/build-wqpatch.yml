@@ -20,10 +20,23 @@ jobs:
       - name: Checkout patch overlay
         uses: actions/checkout@v4
 
-      - name: Verify Apple build tools
+      - name: Select Xcode 26 and verify iOS SDK
         run: |
+          xcode_app=$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' | sort -V | tail -n 1)
+          if [[ -z "$xcode_app" ]]; then
+            echo "::error::No Xcode 26 installation found on macOS runner."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select --switch "$xcode_app/Contents/Developer"
+          xcrun --kill-cache
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          sdk_version=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK: $sdk_version"
+          if [[ "${sdk_version%%.*}" -lt 26 ]]; then
+            echo "::error::WQFiles requires iOS SDK 26 or later"
+            exit 1
+          fi
           xcrun swiftc --version
 
       - name: Checkout pinned WQFiles source
