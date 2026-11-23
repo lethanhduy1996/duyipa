@@ -154,7 +154,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Patch password" message:@"Enter package password" preferredStyle:UIAlertControllerStyleAlert];
         [a addTextFieldWithConfigurationHandler:^(UITextField *field){ field.secureTextEntry=YES; }];
         [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Import" style:UIAlertActionStyleDefault handler:^(UIAlertAction *unused) {
+        [a addAction:[UIAlertAction actionWithTitle:@"Import" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused unused) {
             [self importData:data password:a.textFields.firstObject.text ?: @""];
         }]];
         [self presentViewController:a animated:YES completion:nil];
@@ -172,7 +172,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     if (self.lastTransaction) { [self alert:@"Active patch" message:@"Restore the active patch before applying a new one"]; return; }
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Apply patch?" message:@"Close targeted apps first. A safety backup will be created." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Apply" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *unused) { [self apply]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Apply" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused) { [self apply]; }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)apply {
@@ -245,7 +245,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     if (!self.lastTransaction) return;
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Restore patch?" message:@"Restore is refused if any target no longer matches the patch hash." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *unused){ [self restore]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused){ [self restore]; }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)restore {
