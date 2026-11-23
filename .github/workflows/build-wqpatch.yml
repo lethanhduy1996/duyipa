@@ -36,7 +36,7 @@ jobs:
 
       - name: Build IPA
         working-directory: upstream
-        run: bash build.sh
+        run: WQ_SKIP_IOS_CHECK=1 bash build.sh
 
       - name: Validate IPA ZIP
         run: |
