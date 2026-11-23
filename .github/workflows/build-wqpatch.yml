@@ -36,7 +36,7 @@ jobs:
 
       - name: Build IPA
         working-directory: upstream
-        run: WQ_SKIP_IOS_CHECK=1 bash build.sh
+        run: WQ_SKIP_PREFLIGHT=1 bash build.sh
 
       - name: Validate IPA ZIP
         run: |
@@ -52,3 +52,7 @@ jobs:
           path: upstream/WQFiles.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Run upstream host regression tests
+        working-directory: upstream
+        run: WQ_SKIP_IOS_CHECK=1 bash tests/run_all_tests.sh
