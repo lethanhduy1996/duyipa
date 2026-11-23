@@ -47,6 +47,11 @@ jobs:
       - name: Install WQ Patch overlay
         run: python3 patch/prepare_upstream.py . upstream
 
+      - name: Patch codec round-trip tests
+        run: |
+          xcrun swiftc -parse-as-library patch/WQ3105Bridge.swift patch/WQ3105BridgeTests.swift -o "$RUNNER_TEMP/wqpatch-codec-tests"
+          "$RUNNER_TEMP/wqpatch-codec-tests"
+
       - name: Build IPA
         working-directory: upstream
         run: WQ_SKIP_PREFLIGHT=1 bash build.sh
