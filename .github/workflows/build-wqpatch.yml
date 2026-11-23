@@ -1,0 +1,54 @@
+name: Build WQFiles Patch IPA
+
+on:
+  push:
+    branches:
+      - feature/wqfiles-patch
+    paths:
+      - "patch/**"
+      - ".github/workflows/build-wqpatch.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 55
+    steps:
+      - name: Checkout patch overlay
+        uses: actions/checkout@v4
+
+      - name: Verify Apple build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun swiftc --version
+
+      - name: Checkout pinned WQFiles source
+        run: |
+          git clone --no-checkout https://github.com/kolbicz/WQFiles.git upstream
+          git -C upstream checkout --detach a8a4d06cbf2651de1cd7bd9f5f8e38f67b025890
+
+      - name: Install WQ Patch overlay
+        run: python3 patch/prepare_upstream.py . upstream
+
+      - name: Build IPA
+        working-directory: upstream
+        run: bash build.sh
+
+      - name: Validate IPA ZIP
+        run: |
+          test -s upstream/WQFiles.ipa
+          unzip -tqq upstream/WQFiles.ipa
+          unzip -l upstream/WQFiles.ipa | grep -F 'Payload/WQFiles.app/WQFiles'
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WQFiles-Patch-iOS26-IPA
+          path: upstream/WQFiles.ipa
+          if-no-files-found: error
+          retention-days: 14
