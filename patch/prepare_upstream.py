@@ -31,7 +31,41 @@ changes = [
      '} else if (indexPath.row == 10) {\n        next = [WQPatchViewController new];\n    } else if (indexPath.row == 9) {\n        wq_open_inspectors_folder(self.navigationController);'),
 ]
 for old, new in changes: s=sub_once(s, old, new)
+# Opening a .3105 file inside WQFiles routes to the importer.
+s = sub_once(s,
+    'if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {',
+    'if ([item.name.pathExtension caseInsensitiveCompare:@"3105"] == NSOrderedSame) {\n'
+    '            WQPatchViewController *patch = [[WQPatchViewController alloc] initWithImportFilePath:item.path];\n'
+    '            [self.navigationController pushViewController:patch animated:YES];\n'
+    '            return;\n'
+    '        }\n'
+    '        if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {')
+# Opening through iOS Files app / Open In.
+s = sub_once(s,
+    'else if ([ext isEqualToString:@"zip"])   // a custom inspector (#45)',
+    'else if ([ext isEqualToString:@"3105"]) {\n'
+    '            dispatch_async(dispatch_get_main_queue(), ^{\n'
+    '                UIViewController *host = wq_top_view_controller();\n'
+    '                WQPatchViewController *patch = [[WQPatchViewController alloc] initWithImportURL:url];\n'
+    '                UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:patch];\n'
+    '                [host presentViewController:nav animated:YES completion:nil];\n'
+    '            });\n'
+    '        }\n'
+    '        else if ([ext isEqualToString:@"zip"])   // a custom inspector (#45)')
 p.write_text(s)
+import plistlib
+info_path=root / 'Info.plist'
+with info_path.open('rb') as f: info=plistlib.load(f)
+identifier='cz.kolbi.wqfiles.patch3105'
+info.setdefault('UTImportedTypeDeclarations', []).append({
+    'UTTypeIdentifier': identifier, 'UTTypeDescription': '3105 Patch Package',
+    'UTTypeConformsTo': ['public.data'],
+    'UTTypeTagSpecification': {'public.filename-extension': ['3105']}})
+info.setdefault('CFBundleDocumentTypes', []).append({
+    'CFBundleTypeName': '3105 Patch Package', 'CFBundleTypeRole': 'Viewer',
+    'LSHandlerRank': 'Alternate', 'LSItemContentTypes': [identifier]})
+with info_path.open('wb') as f: plistlib.dump(info, f)
+
 
 p = root / "build.sh"
 s = p.read_text()
