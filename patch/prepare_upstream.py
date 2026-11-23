@@ -45,7 +45,7 @@ for source in "AT{SOURCES[@]}"; do
     xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 -miphoneos-version-min="$MINIMUM_IOS_VERSION" -isysroot "$SDK" -Wall -Wextra -Werror -O2 AT{WQ_EXTRA_CFLAGS:-} -c "$source" -o "$object"
     OBJECTS+=("$object")
 done
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O WQ3105Bridge.swift "AT{OBJECTS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -lsqlite3 -lz -o "$APP/WQFiles"
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -parse-as-library WQ3105Bridge.swift "AT{OBJECTS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -lsqlite3 -lz -o "$APP/WQFiles"
 """
 build_part=build_part.replace("AT{", chr(36)+"{")
 p.write_text(s[:start]+build_part+s[end:])
