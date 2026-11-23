@@ -257,20 +257,32 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)pick {
-    UTType *type=[UTType typeWithFilenameExtension:@"3105" conformingToType:UTTypeData];
+    // Do NOT restrict the picker to a dynamically inferred .3105 UTI or UTTypeData.
+    // iOS Files may classify external .3105 packages as an unknown type and gray them out.
+    // Public.item accepts files from third-party providers; the extension and magic bytes
+    // are validated after selection, before any package is decoded or applied.
     UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:type?@[type,UTTypeData]:@[UTTypeData]];
-    picker.delegate=self; picker.allowsMultipleSelection=NO;
+        initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
+    picker.delegate=self;
+    picker.allowsMultipleSelection=NO;
+    picker.shouldShowFileExtensions=YES;
     [self presentViewController:picker animated:YES completion:nil];
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *url=urls.firstObject;
     if (!url) return;
+    if (!self.waitingForDraftFile &&
+        ![[url.pathExtension lowercaseString] isEqualToString:@"3105"]) {
+        [self alert:@"Không hỗ trợ" message:@"Vui lòng chọn tệp .3105 (không cần đổi tên hoặc nén ZIP)"];
+        return;
+    }
     BOOL scope=[url startAccessingSecurityScopedResource];
-    NSData *data=[NSData dataWithContentsOfURL:url options:0 error:nil];
+    NSError *readError=nil;
+    NSData *data=[NSData dataWithContentsOfURL:url options:0 error:&readError];
     if (scope) [url stopAccessingSecurityScopedResource];
     if (!data || data.length>64*1024*1024) {
-        [self alert:@"Không thể đọc tệp" message:@"Tệp không tồn tại, không thể truy cập hoặc lớn hơn 64 MB"]; return;
+        NSString *reason=readError.localizedDescription ?: @"Tệp không đọc được hoặc lớn hơn 64 MB";
+        [self alert:@"Không thể đọc tệp" message:reason]; return;
     }
     if (self.waitingForDraftFile) {
         self.waitingForDraftFile=NO;
@@ -311,8 +323,9 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         }
         self.waitingForDraftFile=YES;
         UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc]
-            initForOpeningContentTypes:@[UTTypeData]];
+            initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
         picker.delegate=self; picker.allowsMultipleSelection=NO;
+        picker.shouldShowFileExtensions=YES;
         [self presentViewController:picker animated:YES completion:nil];
     }]];
     [self presentViewController:form animated:YES completion:nil];
