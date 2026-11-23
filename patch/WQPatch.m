@@ -78,6 +78,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 @property(nonatomic,copy) NSString *draftPath;
 @property(nonatomic,copy) NSString *draftPassword;
 @property(nonatomic) BOOL waitingForDraftFile;
+@property(nonatomic,copy) NSString *searchText;
 @end
 @implementation WQPatchViewController
 - (instancetype)init {
@@ -99,7 +100,18 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     [self findTransaction];
     NSString *savedName=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastName"];
     if (savedName.length) self.patchName=savedName;
+    self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
+    self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeNever;
+    self.tableView.backgroundColor=UIColor.blackColor;
+    self.tableView.separatorStyle=UITableViewCellSeparatorStyleNone;
     self.tableView.tintColor=[UIColor colorWithRed:0.58 green:0.49 blue:1.0 alpha:1.0];
+    UISearchBar *search=[[UISearchBar alloc] initWithFrame:CGRectMake(0,0,self.tableView.bounds.size.width,68)];
+    search.placeholder=@"Tìm patch đã nhập";
+    search.searchBarStyle=UISearchBarStyleMinimal;
+    search.delegate=self;
+    search.autocapitalizationType=UITextAutocapitalizationTypeNone;
+    search.autocorrectionType=UITextAutocorrectionTypeNo;
+    self.tableView.tableHeaderView=search;
     __weak typeof(self) weakSelf=self;
     UIAction *create=[UIAction actionWithTitle:@"Tạo patch" image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil handler:^(UIAction *__unused action) {
         [weakSelf startCreate];
@@ -162,49 +174,82 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         }
     }
 }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section==0?3:2; }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section==0?@"Patch":@"Áp dụng và khôi phục";
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)text {
+    self.searchText=text ?: @"";
+    [self.tableView reloadData];
 }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
-    if (indexPath.section==0 && indexPath.row==0) {
-        cell.textLabel.text=@"Tạo patch";
-        cell.detailTextLabel.text=@"Tạo và xuất gói .3105";
-        cell.imageView.image=[UIImage systemImageNamed:@"doc.badge.plus"];
-    } else if (indexPath.section==0 && indexPath.row==1) {
-        cell.textLabel.text=@"Nhập .3105";
-        cell.detailTextLabel.text=@"Chọn tệp trong Files, nhập cả gói có mật khẩu";
-        cell.imageView.image=[UIImage systemImageNamed:@"square.and.arrow.down"];
-    } else if (indexPath.section==0) {
-        cell.textLabel.text=self.patchName;
-        cell.detailTextLabel.text=self.rules?[NSString stringWithFormat:@"%lu verified replacement(s)",(unsigned long)self.rules.count]:@"Select a package in the Files app";
-    } else if (indexPath.row==0) {
-        cell.textLabel.text=@"Apply patch";
-        cell.detailTextLabel.text=@"Backs up original bytes and records SHA-256";
-        cell.textLabel.textColor=self.rules.count?UIColor.systemBlueColor:UIColor.secondaryLabelColor;
-    } else {
-        cell.textLabel.text=@"Restore original files";
-        cell.detailTextLabel.text=self.lastTransaction?@"Active patch journal available":@"No active transaction";
-        cell.textLabel.textColor=self.lastTransaction?UIColor.systemBlueColor:UIColor.secondaryLabelColor;
-    }
-    cell.detailTextLabel.numberOfLines=2;
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 1; }
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)__unused section {
+    NSString *savedPath=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
+    BOOL hasPatch=self.rules.count>0 || (savedPath.length && [NSFileManager.defaultManager fileExistsAtPath:savedPath]);
+    if (!hasPatch) return 0;
+    if (self.searchText.length && [self.patchName rangeOfString:self.searchText options:NSCaseInsensitiveSearch].location==NSNotFound) return 0;
+    return 1;
+}
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)__unused section {
+    return @"Patch";
+}
+- (CGFloat)tableView:(UITableView *__unused)tableView heightForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
+    return 116;
+}
+- (UIView *)tableView:(UITableView *__unused)tableView viewForFooterInSection:(NSInteger)__unused)section {
+    UIView *v=[[UIView alloc] initWithFrame:CGRectZero]; return v;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
+    UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"WQPatchCard"];
+    if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"WQPatchCard"];
+    cell.backgroundColor=[UIColor colorWithWhite:0.115 alpha:1];
+    cell.contentView.backgroundColor=cell.backgroundColor;
+    cell.layer.cornerRadius=25;
+    cell.layer.masksToBounds=YES;
+    cell.selectionStyle=UITableViewCellSelectionStyleDefault;
+    cell.textLabel.text=self.patchName ?: @"Patch";
+    cell.textLabel.textColor=UIColor.whiteColor;
+    cell.textLabel.font=[UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
+    cell.detailTextLabel.text=self.rules.count
+        ? [NSString stringWithFormat:@"Patch · .3105 · %lu tệp",(unsigned long)self.rules.count]
+        : @"Patch · .3105 · Chạm để mở";
+    cell.detailTextLabel.textColor=UIColor.secondaryLabelColor;
+    cell.detailTextLabel.font=[UIFont systemFontOfSize:15];
+    UIImageSymbolConfiguration *symbol=[UIImageSymbolConfiguration configurationWithPointSize:27 weight:UIImageSymbolWeightMedium];
+    cell.imageView.image=[UIImage systemImageNamed:@"shippingbox.fill" withConfiguration:symbol];
+    cell.imageView.tintColor=[UIColor colorWithRed:0.59 green:0.52 blue:1.0 alpha:1.0];
     cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    [tableView deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section==0 && ip.row==0) [self startCreate];
-    if (ip.section==0 && ip.row==1) [self pick];
-    if (ip.section==0 && ip.row==2) {
-        NSString *path=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
-        NSData *saved=path.length?[NSData dataWithContentsOfFile:path]:nil;
-        if (saved) [self importData:saved password:nil];
-        else if (!self.rules.count) [self alert:@"Chưa có patch" message:@"Nhấn + để tạo patch hoặc chọn Nhập .3105"];
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *__unused)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [self presentPatchActions];
+}
+- (void)presentPatchActions {
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:self.patchName
+        message:@"Chọn thao tác với gói .3105" preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *savedPath=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
+    if (savedPath.length && [NSFileManager.defaultManager fileExistsAtPath:savedPath]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Mở gói đã lưu" style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *__unused action) {
+                NSData *data=[NSData dataWithContentsOfFile:savedPath];
+                if (data) [self importData:data password:nil];
+            }]];
     }
-    if (ip.section==1 && ip.row==0) [self confirmApply];
-    if (ip.section==1 && ip.row==1) [self confirmRestore];
+    if (self.rules.count) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Áp dụng patch" style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *__unused action) { [self confirmApply]; }]];
+    }
+    if (self.lastTransaction) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Khôi phục tệp gốc" style:UIAlertActionStyleDestructive
+            handler:^(UIAlertAction *__unused action) { [self confirmRestore]; }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    UIPopoverPresentationController *pop=sheet.popoverPresentationController;
+    if (pop) {
+        pop.sourceView=self.view;
+        pop.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),120,1,1);
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];

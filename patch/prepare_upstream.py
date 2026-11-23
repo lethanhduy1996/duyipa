@@ -22,7 +22,7 @@ changes = [
     ('image:[UIImage systemImageNamed:@"clock.arrow.circlepath"] tag:3];',
      'image:[UIImage systemImageNamed:@"clock.arrow.circlepath"] tag:3];\n    patchNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Patch" image:[UIImage systemImageNamed:@"square.stack.3d.up.fill"] tag:4];'),
     ('self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];',
-     'self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav, patchNav];'),
+     'self.viewControllers = @[homeNav, appsNav, patchNav, cleanNav, vaultNav];'),
     ('return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 10;',
      'return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 11;'),
     ('@[@"Recent", @"clock"], @[@"Inspectors", @"curlybraces"]];',
@@ -31,6 +31,17 @@ changes = [
      '} else if (indexPath.row == 10) {\n        next = [WQPatchViewController new];\n    } else if (indexPath.row == 9) {\n        wq_open_inspectors_folder(self.navigationController);'),
 ]
 for old, new in changes: s=sub_once(s, old, new)
+# WQFiles uses one tab-bar index for each Prism quick action; update the two
+# quick navigation targets when the Patch tab moves into the center position.
+s=sub_once(s, 'case 1: [self openTab:2]; break;', 'case 1: [self openTab:3]; break;')
+s=sub_once(s, 'case 3: [self openTab:3]; break;', 'case 3: [self openTab:4]; break;')
+s=sub_once(s,
+    'else if (index == 2) [self.navigationController pushViewController:[WQCacheCleanerViewController new] animated:YES];',
+    'else if (index == 3) [self.navigationController pushViewController:[WQCacheCleanerViewController new] animated:YES];')
+s=sub_once(s,
+    'else if (index == 3) [self.navigationController pushViewController:[WQPrismVaultViewController new] animated:YES];',
+    'else if (index == 4) [self.navigationController pushViewController:[WQPrismVaultViewController new] animated:YES];')
+s=sub_once(s, 'initWithTitle:@"Patch" image:', 'initWithTitle:@"Đã cài" image:')
 # Opening a .3105 file inside WQFiles routes to the importer.
 s = sub_once(s,
     'if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {',

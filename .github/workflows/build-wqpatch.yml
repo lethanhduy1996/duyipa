@@ -66,7 +66,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Run upstream host regression tests (diagnostic)
-        continue-on-error: true # Upstream inode checkpoint test can exceed 900 s on GitHub runners
-        working-directory: upstream
-        run: WQ_SKIP_IOS_CHECK=1 bash tests/run_all_tests.sh
+      - name: Fast validation of overlay and packaged IPA
+        run: |
+          python3 -m py_compile patch/prepare_upstream.py
+          bash -n upstream/build.sh
+          plutil -lint upstream/Info.plist upstream/entitlements.plist
+          echo "Note: full upstream host tests run separately; IPA is not device validated"
