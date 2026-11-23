@@ -195,7 +195,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 - (CGFloat)tableView:(UITableView *__unused)tableView heightForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
     return 116;
 }
-- (UIView *)tableView:(UITableView *__unused)tableView viewForFooterInSection:(NSInteger)__unused)section {
+- (UIView *)tableView:(UITableView *__unused)tableView viewForFooterInSection:(NSInteger)__unused section {
     UIView *v=[[UIView alloc] initWithFrame:CGRectZero]; return v;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
@@ -345,6 +345,8 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     }
     self.patchName=self.draftName;
     self.rules=draft[@"files"];
+    [NSUserDefaults.standardUserDefaults setObject:path forKey:@"WQPatchLastFile"];
+    [NSUserDefaults.standardUserDefaults setObject:self.patchName forKey:@"WQPatchLastName"];
     [self.tableView reloadData];
     [self alert:@"Đã tạo gói .3105" message:[NSString stringWithFormat:@"Đã lưu vào Tệp → Trên iPhone → WQ Files → Patches → %@. Có thể mở, chia sẻ hoặc nhập lại.",filename]];
 }
