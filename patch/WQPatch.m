@@ -97,6 +97,8 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self findTransaction];
+    NSString *savedName=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastName"];
+    if (savedName.length) self.patchName=savedName;
     self.tableView.tintColor=[UIColor colorWithRed:0.58 green:0.49 blue:1.0 alpha:1.0];
     __weak typeof(self) weakSelf=self;
     UIAction *create=[UIAction actionWithTitle:@"Tạo patch" image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil handler:^(UIAction *__unused action) {
@@ -116,6 +118,12 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    if (self.navigationController.presentingViewController &&
+        self.navigationController.viewControllers.firstObject==self &&
+        !self.navigationItem.leftBarButtonItem) {
+        self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc]
+             initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closePatch)];
+    }
     if (self.pendingImportPath.length) {
         NSString *path=self.pendingImportPath; self.pendingImportPath=nil;
         dispatch_async(wq_io(), ^{
@@ -189,6 +197,12 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     [tableView deselectRowAtIndexPath:ip animated:YES];
     if (ip.section==0 && ip.row==0) [self startCreate];
     if (ip.section==0 && ip.row==1) [self pick];
+    if (ip.section==0 && ip.row==2) {
+        NSString *path=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
+        NSData *saved=path.length?[NSData dataWithContentsOfFile:path]:nil;
+        if (saved) [self importData:saved password:nil];
+        else if (!self.rules.count) [self alert:@"Chưa có patch" message:@"Nhấn + để tạo patch hoặc chọn Nhập .3105"];
+    }
     if (ip.section==1 && ip.row==0) [self confirmApply];
     if (ip.section==1 && ip.row==1) [self confirmRestore];
 }
@@ -310,6 +324,15 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     }
     self.patchName=response[@"name"] ?: @"Imported patch";
     self.rules=response[@"files"];
+    // Save the original authenticated package; never persist the decrypted payload or its password.
+    NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *dir=[documents stringByAppendingPathComponent:@"Patches"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *path=[dir stringByAppendingPathComponent:[WQPHash(data) stringByAppendingPathExtension:@"3105"]];
+    if ([data writeToFile:path options:NSDataWritingAtomic error:nil]) {
+        [NSUserDefaults.standardUserDefaults setObject:path forKey:@"WQPatchLastFile"];
+        [NSUserDefaults.standardUserDefaults setObject:self.patchName forKey:@"WQPatchLastName"];
+    }
     [self.tableView reloadData];
 }
 - (void)confirmApply {
