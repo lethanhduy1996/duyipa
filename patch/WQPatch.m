@@ -12,6 +12,7 @@
 #import <string.h>
 
 extern char *wq_decode_3105(const uint8_t *, intptr_t, const char *);
+extern char *wq_create_3105(const char *, const char *);
 
 static NSString *WQPHash(NSData *d) {
     unsigned char bytes[CC_SHA256_DIGEST_LENGTH];
@@ -70,15 +71,77 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 @property(nonatomic,copy) NSArray<NSDictionary *> *rules;
 @property(nonatomic,copy) NSString *patchName;
 @property(nonatomic,copy) NSString *lastTransaction;
+@property(nonatomic,copy) NSString *pendingImportPath;
+@property(nonatomic,strong) NSURL *pendingImportURL;
+@property(nonatomic,copy) NSString *draftName;
+@property(nonatomic,copy) NSString *draftBundle;
+@property(nonatomic,copy) NSString *draftPath;
+@property(nonatomic,copy) NSString *draftPassword;
+@property(nonatomic) BOOL waitingForDraftFile;
 @end
 @implementation WQPatchViewController
 - (instancetype)init {
     if ((self=[super initWithStyle:UITableViewStyleInsetGrouped])) {
-        self.title=@"Patch"; self.patchName=@"No patch selected";
+        self.title=@"Đã cài"; self.patchName=@"Chưa chọn patch";
     }
     return self;
 }
-- (void)viewDidLoad { [super viewDidLoad]; [self findTransaction]; }
+- (instancetype)initWithImportFilePath:(NSString *)path {
+    if ((self=[self init])) self.pendingImportPath=[path copy];
+    return self;
+}
+- (instancetype)initWithImportURL:(NSURL *)url {
+    if ((self=[self init])) self.pendingImportURL=url;
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self findTransaction];
+    self.tableView.tintColor=[UIColor colorWithRed:0.58 green:0.49 blue:1.0 alpha:1.0];
+    __weak typeof(self) weakSelf=self;
+    UIAction *create=[UIAction actionWithTitle:@"Tạo patch" image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil handler:^(UIAction *__unused action) {
+        [weakSelf startCreate];
+    }];
+    UIAction *import=[UIAction actionWithTitle:@"Nhập .3105" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil handler:^(UIAction *__unused action) {
+        [weakSelf pick];
+    }];
+    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus"] menu:[UIMenu menuWithChildren:@[create,import]]];
+    if (self.presentingViewController && self.navigationController.viewControllers.count==1) {
+        self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+            target:self action:@selector(closePatch)];
+    }
+}
+- (void)closePatch {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.pendingImportPath.length) {
+        NSString *path=self.pendingImportPath; self.pendingImportPath=nil;
+        dispatch_async(wq_io(), ^{
+            NSString *err=nil; NSData *data=wq_read(path,64*1024*1024+1,&err);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!data || data.length>64*1024*1024) [self alert:@"Không thể nhập patch" message:err?:@"Tệp không đọc được hoặc vượt 64 MB"];
+                else [self importData:data password:nil];
+            });
+        });
+    } else if (self.pendingImportURL) {
+        NSURL *url=self.pendingImportURL; self.pendingImportURL=nil;
+        [self importExternalURL:url];
+    }
+}
+- (void)importExternalURL:(NSURL *)url {
+    if (![[url.pathExtension lowercaseString] isEqualToString:@"3105"]) {
+        [self alert:@"Không hỗ trợ" message:@"Chỉ nhận gói .3105"]; return;
+    }
+    BOOL scope=[url startAccessingSecurityScopedResource];
+    NSData *data=[NSData dataWithContentsOfURL:url options:0 error:nil];
+    if (scope) [url stopAccessingSecurityScopedResource];
+    if (!data || data.length>64*1024*1024) {
+        [self alert:@"Không thể nhập patch" message:@"Tệp không đọc được hoặc vượt 64 MB"]; return;
+    }
+    [self importData:data password:nil];
+}
 - (void)findTransaction {
     self.lastTransaction=nil;
     NSArray *folders=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:WQPStore() error:nil]
@@ -92,15 +155,20 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     }
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section==0?2:2; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section==0?3:2; }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section==0?@"Patch package":@"Apply and recovery";
+    return section==0?@"Patch":@"Áp dụng và khôi phục";
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     if (indexPath.section==0 && indexPath.row==0) {
-        cell.textLabel.text=@"Import .3105 patch";
-        cell.detailTextLabel.text=@"Supports authenticated schema v1-v3 and password";
+        cell.textLabel.text=@"Tạo patch";
+        cell.detailTextLabel.text=@"Tạo và xuất gói .3105";
+        cell.imageView.image=[UIImage systemImageNamed:@"doc.badge.plus"];
+    } else if (indexPath.section==0 && indexPath.row==1) {
+        cell.textLabel.text=@"Nhập .3105";
+        cell.detailTextLabel.text=@"Chọn tệp trong Files, nhập cả gói có mật khẩu";
+        cell.imageView.image=[UIImage systemImageNamed:@"square.and.arrow.down"];
     } else if (indexPath.section==0) {
         cell.textLabel.text=self.patchName;
         cell.detailTextLabel.text=self.rules?[NSString stringWithFormat:@"%lu verified replacement(s)",(unsigned long)self.rules.count]:@"Select a package in the Files app";
@@ -119,7 +187,8 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section==0 && ip.row==0) [self pick];
+    if (ip.section==0 && ip.row==0) [self startCreate];
+    if (ip.section==0 && ip.row==1) [self pick];
     if (ip.section==1 && ip.row==0) [self confirmApply];
     if (ip.section==1 && ip.row==1) [self confirmRestore];
 }
@@ -141,8 +210,84 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     BOOL scope=[url startAccessingSecurityScopedResource];
     NSData *data=[NSData dataWithContentsOfURL:url options:0 error:nil];
     if (scope) [url stopAccessingSecurityScopedResource];
-    if (!data || data.length>64*1024*1024) { [self alert:@"Import failed" message:@"File unreadable or larger than 64 MB"]; return; }
+    if (!data || data.length>64*1024*1024) {
+        [self alert:@"Không thể đọc tệp" message:@"Tệp không tồn tại, không thể truy cập hoặc lớn hơn 64 MB"]; return;
+    }
+    if (self.waitingForDraftFile) {
+        self.waitingForDraftFile=NO;
+        [self exportDraftWithData:data];
+        return;
+    }
+    if (![[url.pathExtension lowercaseString] isEqualToString:@"3105"]) {
+        [self alert:@"Không hỗ trợ" message:@"Vui lòng chọn tệp có đuôi .3105"];
+        return;
+    }
     [self importData:data password:nil];
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.waitingForDraftFile=NO;
+}
+- (void)startCreate {
+    UIAlertController *form=[UIAlertController alertControllerWithTitle:@"Tạo patch .3105"
+        message:@"Nhập tên, bundle ID ứng dụng và đường dẫn tương đối đến tệp sẽ thay thế. Tiếp theo chọn nội dung từ Files."
+        preferredStyle:UIAlertControllerStyleAlert];
+    NSArray<NSString *> *placeholders=@[@"Tên patch", @"Bundle ID (com.example.app)", @"Đích (Documents/config.json)", @"Mật khẩu (có thể bỏ trống)"];
+    for (NSString *placeholder in placeholders) {
+        [form addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.placeholder=placeholder;
+            if ([placeholder hasPrefix:@"Mật khẩu"]) f.secureTextEntry=YES;
+            f.autocorrectionType=UITextAutocorrectionTypeNo;
+            f.autocapitalizationType=UITextAutocapitalizationTypeNone;
+        }];
+    }
+    [form addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [form addAction:[UIAlertAction actionWithTitle:@"Chọn tệp" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        self.draftName=form.textFields[0].text ?: @"";
+        self.draftBundle=form.textFields[1].text ?: @"";
+        self.draftPath=form.textFields[2].text ?: @"";
+        self.draftPassword=form.textFields[3].text ?: @"";
+        if (!self.draftName.length || !WQPValidBundle(self.draftBundle) || !WQPValidPath(self.draftPath)) {
+            [self alert:@"Thông tin không hợp lệ" message:@"Kiểm tra tên, bundle ID và đường dẫn phải bắt đầu bằng Documents/, Library/ hoặc tmp/"];
+            return;
+        }
+        self.waitingForDraftFile=YES;
+        UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:@[UTTypeData]];
+        picker.delegate=self; picker.allowsMultipleSelection=NO;
+        [self presentViewController:picker animated:YES completion:nil];
+    }]];
+    [self presentViewController:form animated:YES completion:nil];
+}
+- (void)exportDraftWithData:(NSData *)payload {
+    if (payload.length>8*1024*1024) {
+        [self alert:@"Tệp quá lớn" message:@"Bản tạo patch thử nghiệm giới hạn 8 MB/tệp"]; return;
+    }
+    NSDictionary *draft=@{@"name":self.draftName ?: @"Patch",
+        @"files":@[@{@"bundleID":self.draftBundle ?: @"", @"path":self.draftPath ?: @"",
+                      @"data":[payload base64EncodedStringWithOptions:0]}]};
+    NSData *json=[NSJSONSerialization dataWithJSONObject:draft options:0 error:nil];
+    NSString *input=[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    char *raw=wq_create_3105(input.UTF8String,self.draftPassword.UTF8String);
+    NSData *rawData=raw?[NSData dataWithBytes:raw length:strlen(raw)]:nil; free(raw);
+    NSDictionary *response=rawData?[NSJSONSerialization JSONObjectWithData:rawData options:0 error:nil]:nil;
+    NSString *encoded=response[@"base64"];
+    NSData *package=[encoded isKindOfClass:NSString.class]?[[NSData alloc] initWithBase64EncodedString:encoded options:0]:nil;
+    if (!package) {
+        [self alert:@"Tạo patch thất bại" message:response[@"error"] ?: @"Không thể mã hóa gói .3105"];
+        return;
+    }
+    NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *directory=[documents stringByAppendingPathComponent:@"Patches"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *filename=[NSString stringWithFormat:@"%@.3105",NSUUID.UUID.UUIDString];
+    NSString *path=[directory stringByAppendingPathComponent:filename];
+    if (![package writeToFile:path options:NSDataWritingAtomic error:nil]) {
+        [self alert:@"Không thể lưu patch" message:@"Kiểm tra bộ nhớ thiết bị"]; return;
+    }
+    self.patchName=self.draftName;
+    self.rules=draft[@"files"];
+    [self.tableView reloadData];
+    [self alert:@"Đã tạo gói .3105" message:[NSString stringWithFormat:@"Đã lưu vào Tệp → Trên iPhone → WQ Files → Patches → %@. Có thể mở, chia sẻ hoặc nhập lại.",filename]];
 }
 - (void)importData:(NSData *)data password:(NSString *)password {
     char *raw=wq_decode_3105(data.bytes,(intptr_t)data.length,password.UTF8String);
