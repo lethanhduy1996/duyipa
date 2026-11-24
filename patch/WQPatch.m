@@ -57,6 +57,17 @@ static NSString *WQPLocate(NSString *bundle) {
     }
     return result;
 }
+// Resolve each bundle ID once per transaction. Most packages contain several files
+// for the same app: repeatedly scanning LaunchServices for each rule is unnecessary.
+// Failed/ambiguous lookups are also cached; never resolve to an arbitrary match.
+static NSString *WQPLocateCached(NSString *bundle, NSMutableDictionary<NSString *, id> *cache) {
+    if (!bundle.length) return nil;
+    id cached=cache[bundle];
+    if (cached) return cached == NSNull.null ? nil : (NSString *)cached;
+    NSString *found=WQPLocate(bundle);
+    cache[bundle]=found ?: NSNull.null;
+    return found;
+}
 static BOOL WQPSafeParents(NSString *root, NSString *target) {
     NSString *parent=target.stringByDeletingLastPathComponent;
     while (![parent isEqualToString:root]) {
@@ -455,8 +466,11 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     NSArray *rules=[self.rules copy];
     NSString *name=[self.patchName copy];
     dispatch_async(wq_io(), ^{
+        NSTimeInterval started=NSDate.timeIntervalSinceReferenceDate;
         NSString *err=nil;
-        NSMutableArray *preflight=NSMutableArray.new;
+        NSMutableArray<NSDictionary *> *preflight=NSMutableArray.new;
+        NSMutableArray<NSData *> *payloads=NSMutableArray.new;
+        NSMutableDictionary<NSString *, id> *locationCache=NSMutableDictionary.new;
         NSMutableSet *seen=NSMutableSet.new;
         NSString *dir=[WQPStore() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"%013lld-%@", (long long)(NSDate.date.timeIntervalSince1970*1000),NSUUID.UUID.UUIDString]];
@@ -466,7 +480,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             if (err) break;
             NSString *bundle=item[@"bundleID"], *relative=item[@"path"];
             if (!WQPValidBundle(bundle) || !WQPValidPath(relative)) { err=@"Mã ứng dụng hoặc đường dẫn đích không hợp lệ."; break; }
-            NSString *root=WQPLocate(bundle);
+            NSString *root=WQPLocateCached(bundle,locationCache);
             if (!root) { err=[NSString stringWithFormat:@"Không xác định được duy nhất thư mục của ứng dụng %@.",bundle]; break; }
             NSString *target=[root stringByAppendingPathComponent:relative];
             if (![target hasPrefix:[root stringByAppendingString:@"/"]] ||
@@ -487,22 +501,22 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             }
             NSDictionary *version=existed?wq_file_version(target):nil;
             if (existed && !version) { err=@"Không thể xác minh phiên bản hiện tại của tệp đích."; break; }
+            // Decode the base64 payload once and reuse these exact validated bytes
+            // when applying. Persist only small metadata to the recovery journal.
             [preflight addObject:@{@"bundle":bundle,@"relative":relative,@"target":target,
                 @"hadOriginal":@(existed), @"originalHash":original?WQPHash(original):@"",
                 @"appliedHash":WQPHash(replacement), @"number":@(preflight.count),
-                @"version":version?:@{},@"replacement":item[@"data"]}];
-        }
-        NSMutableArray *safe=NSMutableArray.new;
-        for (NSDictionary *rec in preflight) {
-            NSMutableDictionary *d=[rec mutableCopy]; [d removeObjectForKey:@"replacement"];
-            [safe addObject:d];
+                @"version":version?:@{}}];
+            [payloads addObject:replacement];
         }
         BOOL prepared=(err==nil);
-        NSMutableDictionary *journal=[@{@"name":name,@"state":prepared?@"prepared":@"failed-preflight", @"records":safe} mutableCopy];
+        NSMutableDictionary *journal=[@{@"name":name,@"state":prepared?@"prepared":@"failed-preflight",
+                                          @"records":[preflight copy]} mutableCopy];
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
         if (!WQPWrite(journal,journalPath)) err=err?:@"Không thể lưu nhật ký sao lưu và khôi phục.";
-        if (!err) for (NSDictionary *rec in preflight) {
-            NSData *data=[[NSData alloc] initWithBase64EncodedString:rec[@"replacement"] options:0];
+        if (!err) for (NSUInteger i=0; i<preflight.count; i++) {
+            NSDictionary *rec=preflight[i];
+            NSData *data=payloads[i];
             BOOL success=[rec[@"hadOriginal"] boolValue]
                 ? wq_write_if_unchanged(rec[@"target"],data,rec[@"version"],&err)
                 : wq_create_file(rec[@"target"],data,&err);
@@ -512,8 +526,10 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         WQPWrite(journal,journalPath);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self findTransaction]; [self.tableView reloadData];
+            NSTimeInterval elapsed=NSDate.timeIntervalSinceReferenceDate-started;
             [self alert:err?@"Áp dụng patch chưa hoàn tất":@"Áp dụng patch thành công"
-                message:err?:[NSString stringWithFormat:@"Đã áp dụng %lu tệp. Bản sao lưu được giữ lại.",(unsigned long)preflight.count]];
+                message:err?:[NSString stringWithFormat:@"Đã áp dụng %lu tệp trong %.2f giây. Bản sao lưu được giữ lại.",
+                    (unsigned long)preflight.count,elapsed]];
         });
     });
 }
@@ -527,13 +543,15 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (void)restore {
     NSString *dir=[self.lastTransaction copy];
     dispatch_async(wq_io(), ^{
+        NSTimeInterval started=NSDate.timeIntervalSinceReferenceDate;
+        NSMutableDictionary<NSString *, id> *locationCache=NSMutableDictionary.new;
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
         NSMutableDictionary *journal=[WQPRead(journalPath) mutableCopy];
         NSArray *recs=journal[@"records"];
         NSString *err=recs?nil:@"Không tìm thấy nhật ký khôi phục.";
         for (NSDictionary *rec in recs.reverseObjectEnumerator) {
             if (err) break;
-            NSString *root=WQPLocate(rec[@"bundle"]);
+            NSString *root=WQPLocateCached(rec[@"bundle"],locationCache);
             NSString *target=root?[root stringByAppendingPathComponent:rec[@"relative"]]:nil;
             if (!root || ![target isEqualToString:rec[@"target"]] || !WQPSafeParents(root,target)) {
                 err=@"Thư mục ứng dụng hoặc tệp đích đã thay đổi."; break;
@@ -575,8 +593,9 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self findTransaction]; [self.tableView reloadData];
+            NSTimeInterval elapsed=NSDate.timeIntervalSinceReferenceDate-started;
             [self alert:err?@"Khôi phục chưa hoàn tất":@"Khôi phục thành công"
-                message:err?:@"Đã khôi phục dữ liệu gốc hoặc xóa các tệp được tạo thêm. Bản sao lưu vẫn được giữ lại."];
+                message:err?:[NSString stringWithFormat:@"Đã khôi phục dữ liệu gốc hoặc xóa tệp được tạo thêm trong %.2f giây. Bản sao lưu vẫn được giữ lại.",elapsed]];
         });
     });
 }
