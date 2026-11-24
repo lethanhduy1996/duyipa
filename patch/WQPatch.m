@@ -138,6 +138,9 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 @property(nonatomic,copy) NSString *draftPassword;
 @property(nonatomic) BOOL waitingForDraftFile;
 @property(nonatomic,copy) NSString *searchText;
+@property(nonatomic,copy) NSArray<NSDictionary *> *installedPatches;
+@property(nonatomic,copy) NSString *selectedPatchID;
+@property(nonatomic) BOOL reopenForActions;
 @end
 @implementation WQPatchViewController
 - (instancetype)init {
@@ -157,8 +160,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self findTransaction];
-    NSString *savedName=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastName"];
-    if (savedName.length) self.patchName=savedName;
+    [self loadPatchCatalog];
     self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
     self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeNever;
     self.tableView.backgroundColor=UIColor.blackColor;
@@ -233,20 +235,99 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         }
     }
 }
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)text {
-    self.searchText=text ?: @"";
+
+- (NSString *)patchDir {
+    NSString *root=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    return [root stringByAppendingPathComponent:@"Patches"];
+}
+- (NSString *)catalogPath { return [[self patchDir] stringByAppendingPathComponent:@"index.json"]; }
+- (BOOL)validFilename:(NSString *)filename {
+    if (![filename isKindOfClass:NSString.class] || filename.length>180 ||
+        ![[filename.pathExtension lowercaseString] isEqualToString:@"3105"]) return NO;
+    NSCharacterSet *invalid=[[NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"] invertedSet];
+    return [filename rangeOfCharacterFromSet:invalid].location==NSNotFound &&
+        ![filename containsString:@".."];
+}
+- (NSString *)pathFor:(NSDictionary *)record {
+    NSString *filename=record[@"file"];
+    return [self validFilename:filename]?[[self patchDir] stringByAppendingPathComponent:filename]:nil;
+}
+- (BOOL)saveCatalog:(NSArray *)records {
+    return WQPWrite(@{@"version":@1,@"patches":records},self.catalogPath);
+}
+- (void)loadPatchCatalog {
+    NSString *dir=self.patchDir;
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSArray *saved=WQPRead(self.catalogPath)[@"patches"];
+    NSMutableArray *catalog=NSMutableArray.new;
+    NSMutableSet *seen=NSMutableSet.new;
+    if ([saved isKindOfClass:NSArray.class]) for (id item in saved) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSString *hash=item[@"hash"],*file=item[@"file"],*name=item[@"name"];
+        if (![hash isKindOfClass:NSString.class] || hash.length!=64 ||
+            ![self validFilename:file] || ![name isKindOfClass:NSString.class] ||
+            [seen containsObject:hash] ||
+            ![NSFileManager.defaultManager fileExistsAtPath:[dir stringByAppendingPathComponent:file]]) continue;
+        [catalog addObject:item]; [seen addObject:hash];
+    }
+    // Recover every encrypted .3105 file from older builds, including packages
+    // which were hidden by the old "last imported patch" singleton.
+    NSString *legacy=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
+    NSString *legacyName=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastName"];
+    NSArray *files=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]
+        sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+    for (NSString *filename in files) {
+        if (![self validFilename:filename]) continue;
+        NSString *path=[dir stringByAppendingPathComponent:filename];
+        NSData *content=[NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+        if (!content || content.length>64*1024*1024 || !content.length) continue;
+        NSString *hash=WQPHash(content);
+        if ([seen containsObject:hash]) continue;
+        NSString *name=[path isEqualToString:legacy] && legacyName.length?
+             legacyName:[NSString stringWithFormat:@"Patch %@",[hash substringToIndex:8]];
+        [catalog addObject:@{@"hash":hash,@"file":filename,@"name":name,@"count":@0,@"schema":@0}];
+        [seen addObject:hash];
+    }
+    self.installedPatches=[catalog copy];
+    [self saveCatalog:self.installedPatches];
+}
+- (NSArray *)visiblePatches {
+    if (!self.searchText.length) return self.installedPatches?:@[];
+    NSMutableArray *out=NSMutableArray.new;
+    for (NSDictionary *item in self.installedPatches) {
+        if ([item[@"name"] rangeOfString:self.searchText options:NSCaseInsensitiveSearch].location!=NSNotFound)
+            [out addObject:item];
+    }
+    return out;
+}
+- (BOOL)registerPackage:(NSData *)data name:(NSString *)name count:(NSUInteger)count schema:(NSNumber *)schema {
+    NSString *dir=self.patchDir;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]) return NO;
+    NSString *hash=WQPHash(data);
+    NSString *filename=[hash stringByAppendingPathExtension:@"3105"];
+    NSString *path=[dir stringByAppendingPathComponent:filename];
+    if (![NSFileManager.defaultManager fileExistsAtPath:path] &&
+        ![data writeToFile:path options:NSDataWritingAtomic error:nil]) return NO;
+    NSDictionary *entry=@{@"hash":hash,@"file":filename,
+        @"name":name.length?name:@"Patch",@"count":@(count),@"schema":schema?:@0};
+    NSMutableArray *catalog=[self.installedPatches mutableCopy]?:NSMutableArray.new;
+    NSUInteger match=NSNotFound;
+    for (NSUInteger i=0;i<catalog.count;i++)
+        if ([catalog[i][@"hash"] isEqualToString:hash]) {match=i; break;}
+    if (match==NSNotFound) [catalog addObject:entry]; else catalog[match]=entry;
+    if (![self saveCatalog:catalog]) return NO;
+    self.installedPatches=[catalog copy]; self.selectedPatchID=hash; self.patchName=entry[@"name"];
     [self.tableView reloadData];
+    return YES;
 }
-- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
-    [searchBar resignFirstResponder];
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)text {
+    self.searchText=text?:@""; [self.tableView reloadData];
 }
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar { [searchBar resignFirstResponder]; }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 1; }
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)__unused section {
-    NSString *savedPath=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
-    BOOL hasPatch=self.rules.count>0 || (savedPath.length && [NSFileManager.defaultManager fileExistsAtPath:savedPath]);
-    if (!hasPatch) return 0;
-    if (self.searchText.length && [self.patchName rangeOfString:self.searchText options:NSCaseInsensitiveSearch].location==NSNotFound) return 0;
-    return 1;
+    return (NSInteger)self.visiblePatches.count;
 }
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)__unused section {
     return @"Patch";
@@ -254,23 +335,21 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (CGFloat)tableView:(UITableView *__unused)tableView heightForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
     return 116;
 }
-- (UIView *)tableView:(UITableView *__unused)tableView viewForFooterInSection:(NSInteger)__unused section {
-    UIView *v=[[UIView alloc] initWithFrame:CGRectZero]; return v;
-}
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"WQPatchCard"];
     if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"WQPatchCard"];
+    NSDictionary *item=self.visiblePatches[indexPath.row];
     cell.backgroundColor=[UIColor colorWithWhite:0.115 alpha:1];
     cell.contentView.backgroundColor=cell.backgroundColor;
-    cell.layer.cornerRadius=25;
-    cell.layer.masksToBounds=YES;
+    cell.layer.cornerRadius=25; cell.layer.masksToBounds=YES;
     cell.selectionStyle=UITableViewCellSelectionStyleDefault;
-    cell.textLabel.text=self.patchName ?: @"Patch";
+    cell.textLabel.text=item[@"name"];
     cell.textLabel.textColor=UIColor.whiteColor;
     cell.textLabel.font=[UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
-    cell.detailTextLabel.text=self.rules.count
-        ? [NSString stringWithFormat:@"Patch · .3105 · %lu tệp",(unsigned long)self.rules.count]
-        : @"Patch · .3105 · Chạm để mở";
+    NSUInteger count=[item[@"count"] unsignedIntegerValue];
+    cell.detailTextLabel.text=count
+        ?[NSString stringWithFormat:@"Patch · .3105 · %lu tệp",(unsigned long)count]
+        :@"Patch · .3105 · Chạm để xem";
     cell.detailTextLabel.textColor=UIColor.secondaryLabelColor;
     cell.detailTextLabel.font=[UIFont systemFontOfSize:15];
     UIImageSymbolConfiguration *symbol=[UIImageSymbolConfiguration configurationWithPointSize:27 weight:UIImageSymbolWeightMedium];
@@ -279,36 +358,65 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *__unused)indexPath {
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    [self presentPatchActions];
+    NSDictionary *item=self.visiblePatches[indexPath.row];
+    if ([self.selectedPatchID isEqualToString:item[@"hash"]] && self.rules.count) {
+        [self presentPatchActions]; return;
+    }
+    NSString *path=[self pathFor:item];
+    NSData *data=path?[NSData dataWithContentsOfFile:path]:nil;
+    if (!data) { [self alert:@"Không thể mở patch" message:@"Không đọc được gói đã lưu. Hãy nhập lại tệp .3105."]; return; }
+    self.reopenForActions=YES;
+    [self importData:data password:nil];
 }
 - (void)presentPatchActions {
-    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:self.patchName
+    NSDictionary *item=nil;
+    for (NSDictionary *record in self.installedPatches)
+        if ([record[@"hash"] isEqualToString:self.selectedPatchID]) { item=record; break; }
+    if (!item) return;
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:item[@"name"]
         message:@"Chọn thao tác với gói .3105" preferredStyle:UIAlertControllerStyleActionSheet];
-    NSString *savedPath=[NSUserDefaults.standardUserDefaults stringForKey:@"WQPatchLastFile"];
-    if (savedPath.length && [NSFileManager.defaultManager fileExistsAtPath:savedPath]) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Mở gói đã lưu" style:UIAlertActionStyleDefault
-            handler:^(UIAlertAction *__unused action) {
-                NSData *data=[NSData dataWithContentsOfFile:savedPath];
-                if (data) [self importData:data password:nil];
-            }]];
-    }
-    if (self.rules.count) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Áp dụng patch" style:UIAlertActionStyleDefault
-            handler:^(UIAlertAction *__unused action) { [self confirmApply]; }]];
-    }
-    if (self.lastTransaction) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Khôi phục tệp gốc" style:UIAlertActionStyleDestructive
-            handler:^(UIAlertAction *__unused action) { [self confirmRestore]; }]];
-    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Mở gói đã lưu" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *__unused action) {
+            NSData *data=[NSData dataWithContentsOfFile:[self pathFor:item]];
+            if (data) [self importData:data password:nil];
+        }]];
+    if (self.rules.count) [sheet addAction:[UIAlertAction actionWithTitle:@"Áp dụng patch"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused action) { [self confirmApply]; }]];
+    if (self.lastTransaction) [sheet addAction:[UIAlertAction actionWithTitle:@"Khôi phục patch đang áp dụng"
+        style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused action) { [self confirmRestore]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Xóa khỏi danh sách" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *__unused action) { [self confirmDelete:item]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     UIPopoverPresentationController *pop=sheet.popoverPresentationController;
-    if (pop) {
-        pop.sourceView=self.view;
-        pop.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),120,1,1);
-    }
+    if (pop) { pop.sourceView=self.view; pop.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),120,1,1); }
     [self presentViewController:sheet animated:YES completion:nil];
+}
+- (void)confirmDelete:(NSDictionary *)item {
+    if (self.lastTransaction) {
+        [self alert:@"Không thể xóa" message:@"Hãy khôi phục patch đang áp dụng trước khi xóa gói."];
+        return;
+    }
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Xóa patch?"
+        message:@"Chỉ xóa gói đã nhập; không thay đổi dữ liệu ứng dụng."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Xóa" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused action) {
+        NSMutableArray *catalog=[self.installedPatches mutableCopy];
+        [catalog removeObject:item];
+        if (![self saveCatalog:catalog]) {
+            [self alert:@"Không thể xóa" message:@"Không lưu được danh sách patch."]; return;
+        }
+        self.installedPatches=[catalog copy];
+        if ([self.selectedPatchID isEqualToString:item[@"hash"]]) {
+            self.selectedPatchID=nil; self.rules=nil; self.patchName=@"Chưa chọn patch";
+        }
+        NSString *path=[self pathFor:item];
+        if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        [self.tableView reloadData];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
