@@ -1,4 +1,4 @@
-// WQFiles Patch bridge for the open-source 3105 package schema v1-v3.
+// WQFiles Patch bridge: authenticated 3105 v1-v3 and safe v9 replacement-only import.
 // Implements import/decode only; modifications and rollback live in WQPatch.m.
 // References: YangJiiii/3105 PatchPackageCodec.swift (GPL compatible usage).
 import Foundation
@@ -25,6 +25,9 @@ private struct Rule: Decodable {
     let relativePath: String
     let replacementFilename: String
     let replacementData: Data
+    // Version 9 adds explicit operation and container targeting.
+    let operation: String?
+    let containerKind: String?
 }
 private struct Project: Decodable {
     let id: UUID
@@ -67,8 +70,8 @@ private func decode(_ data: Data, password: String?) throws -> [String: Any] {
     let magic = Data("3105PATCH\0".utf8)
     guard data.starts(with: magic) else { throw ImportError.invalid("not a 3105 file") }
     let envelope = try PropertyListDecoder().decode(Envelope.self, from: data.dropFirst(magic.count))
-    guard (1...3).contains(envelope.schemaVersion) else {
-        throw ImportError.invalid("unsupported 3105 schema v\(envelope.schemaVersion) (supports v1-v3)")
+    guard (1...3).contains(envelope.schemaVersion) || envelope.schemaVersion == 9 else {
+        throw ImportError.invalid("unsupported 3105 schema v\(envelope.schemaVersion) (supports v1-v3 and v9 replace-only)")
     }
     let uuid = envelope.packageID.uuidString
     let key: Data
@@ -93,6 +96,49 @@ private func decode(_ data: Data, password: String?) throws -> [String: Any] {
     let decrypted = try open(envelope.encryptedPayload, key: key,
                              aad: "3105PATCH/v\(envelope.schemaVersion)/payload/\(uuid)")
     let payload = try PropertyListDecoder().decode(Payload.self, from: decrypted)
+    // v9 is not just a larger schema number. It adds merge operations, app-group
+    // containers and typed settings. This build only knows byte-for-byte
+    // Application-container replacements. Fail closed for other semantics.
+    if envelope.schemaVersion == 9 {
+        let plist = try PropertyListSerialization.propertyList(from: decrypted, options: [], format: nil)
+        guard let outer = plist as? [String: Any],
+              Set(outer.keys) == Set(["project", "replacementDigests"]),
+              let project = outer["project"] as? [String: Any] else {
+            throw ImportError.invalid("Unsupported v9 payload structure")
+        }
+        let allowedProject = Set(["id","name","author","isPrivate","createdAt","updatedAt",
+                                  "bundleIdentifiers","appGroupIdentifiers",
+                                  "systemAppGroupIdentifiers","settings","directories","rules"])
+        guard Set(project.keys).isSubset(of: allowedProject),
+              let settings = project["settings"] as? [Any], settings.isEmpty,
+              let groups = project["appGroupIdentifiers"] as? [String], groups.isEmpty,
+              let systemGroups = project["systemAppGroupIdentifiers"] as? [String], systemGroups.isEmpty,
+              let directories = project["directories"] as? [[String: Any]],
+              let rules = project["rules"] as? [[String: Any]] else {
+            throw ImportError.invalid("v9 package requires App Group, settings or unsupported fields; cannot safely apply here")
+        }
+        let allowedDirectory = Set(["id","bundleID","relativePath","containerKind"])
+        for directory in directories {
+            guard Set(directory.keys).isSubset(of: allowedDirectory),
+                  let kind = directory["containerKind"] as? String,
+                  kind == "application" || kind == "app" else {
+                throw ImportError.invalid("v9 directory operation requires unsupported container type")
+            }
+        }
+        let allowedRule = Set(["id","bundleID","relativePath","replacementFilename",
+                               "replacementData","containerKind","operation"])
+        for rule in rules {
+            guard Set(rule.keys).isSubset(of: allowedRule),
+                  let operation = rule["operation"] as? String, operation == "replace",
+                  let kind = rule["containerKind"] as? String,
+                  kind == "application" || kind == "app" else {
+                throw ImportError.invalid("v9 rule uses mergePlist, mergeJson, App Group or unsupported operation; not safe to apply as replacement")
+            }
+        }
+        guard (project["isPrivate"] as? Bool != true) || envelope.isPasswordProtected else {
+            throw ImportError.invalid("v9 private patch must be password-protected")
+        }
+    }
     guard payload.project.id == envelope.packageID else {
         throw ImportError.invalid("package ID mismatch")
     }
@@ -103,6 +149,12 @@ private func decode(_ data: Data, password: String?) throws -> [String: Any] {
     var files = [[String: Any]]()
     var keys = Set<String>()
     for rule in payload.project.rules {
+        if envelope.schemaVersion == 9 {
+            guard rule.operation == "replace",
+                  rule.containerKind == "application" || rule.containerKind == "app" else {
+                throw ImportError.invalid("Unsupported v9 patch operation/container")
+            }
+        }
         guard payload.replacementDigests[rule.id.uuidString] ==
                 Data(SHA256.hash(data: rule.replacementData)) else {
             throw ImportError.invalid("file integrity check failed")
@@ -118,7 +170,8 @@ private func decode(_ data: Data, password: String?) throws -> [String: Any] {
     }
     guard !files.isEmpty else { throw ImportError.invalid("package has no file replacements") }
     return ["name": payload.project.name, "files": files,
-            "source": "3105", "schemaVersion": envelope.schemaVersion]
+            "source": "3105", "schemaVersion": envelope.schemaVersion,
+            "compatibility": envelope.schemaVersion == 9 ? "v9-replace-only" : "legacy"]
 }
 // C ABI, loaded with dlopen/dlsym by the Objective-C application.
 // Returns an allocated UTF-8 JSON C string. Caller must free().
