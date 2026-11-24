@@ -759,38 +759,64 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
                 !WQPSafeParents(root,target) || wq_is_backup_storage_path(target)) { err=@"Thư mục đích không tồn tại hoặc đường dẫn không an toàn."; break; }
             NSString *logical=[NSString stringWithFormat:@"%@\0%@",bundle,relative];
             NSString *owner=reservedTargets[target] ?: reservedKeys[logical];
+            // Reject parent/child overlaps too: a directory replaced with a file
+            // must not invalidate another patch's journal for a nested target.
+            if (!owner) for (NSString *used in reservedTargets) {
+                if ([target hasPrefix:[used stringByAppendingString:@"/"]] ||
+                    [used hasPrefix:[target stringByAppendingString:@"/"]]) {
+                    owner=reservedTargets[used]; break;
+                }
+            }
             if (owner) {
                 err=[NSString stringWithFormat:
-                    @"Xung đột tệp %@ với %@. Hãy khôi phục patch đang chiếm tệp này trước.",relative,owner];
+                    @"Xung đột đường dẫn %@ với %@. Khôi phục patch cũ trước khi thay thế mục này.",relative,owner];
                 break;
             }
-            if ([seen containsObject:target]) { err=@"Có nhiều quy tắc cùng ghi vào một tệp đích."; break; }
+            for (NSString *used in seen) {
+                if ([used isEqualToString:target] ||
+                    [used hasPrefix:[target stringByAppendingString:@"/"]] ||
+                    [target hasPrefix:[used stringByAppendingString:@"/"]]) {
+                    err=@"Gói patch có đường dẫn đích trùng hoặc lồng nhau."; break;
+                }
+            }
+            if (err) break;
             [seen addObject:target];
             struct stat st;
             BOOL existed=wq_stat(target,&st);
-            if (existed && !S_ISREG(st.st_mode)) {
-                err=[NSString stringWithFormat:
-                    @"Không thể áp dụng tệp %lu/%lu. Đích '%@' hiện là %@, không phải tệp thông thường. Hãy kiểm tra đúng phiên bản ứng dụng và loại tệp trước khi thử lại.",
-                    (unsigned long)(preflight.count+1),(unsigned long)rules.count,relative,WQPItemType(st.st_mode)];
-                break;
+            BOOL nonFile=existed && !S_ISREG(st.st_mode);
+            // For directories, links and other filesystem objects, rename the
+            // entire original to a sibling: zero-byte-copy backup, same volume,
+            // preserving all nested contents, modes, links and other metadata.
+            // No destructive operation begins until this name is in the journal.
+            NSString *shadow=@"";
+            NSDictionary *identity=nonFile ? wq_item_identity(target) : nil;
+            if (nonFile) {
+                if (!identity) { err=@"Không thể ghi nhận định danh của mục gốc."; break; }
+                shadow=[target.stringByDeletingLastPathComponent stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@".wqpatch-original-%@",NSUUID.UUID.UUIDString]];
+                struct stat backupSt;
+                if (wq_stat(shadow,&backupSt)) {
+                    err=@"Không tạo được tên sao lưu tạm không trùng."; break;
+                }
             }
             NSData *replacement=[[NSData alloc] initWithBase64EncodedString:item[@"data"] options:0];
             if (!replacement || replacement.length>8*1024*1024) { err=@"Dữ liệu thay thế không hợp lệ hoặc vượt quá 8 MB."; break; }
             NSData *original=nil;
-            if (existed) {
+            if (existed && !nonFile) {
                 original=wq_read(target,8*1024*1024+1,&err);
                 if (!original || original.length>8*1024*1024) { err=err ?: @"Không thể sao lưu tệp đích lớn hơn 8 MB."; break; }
                 NSString *backup=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%lu.original",(unsigned long)preflight.count]];
                 if (![original writeToFile:backup options:NSDataWritingAtomic error:nil]) { err=@"Không thể lưu bản sao dữ liệu gốc."; break; }
             }
-            NSDictionary *version=existed?wq_file_version(target):nil;
-            if (existed && !version) { err=@"Không thể xác minh phiên bản hiện tại của tệp đích."; break; }
-            // Decode the base64 payload once and reuse these exact validated bytes
-            // when applying. Persist only small metadata to the recovery journal.
+            NSDictionary *version=existed && !nonFile?wq_file_version(target):nil;
+            if (existed && !nonFile && !version) { err=@"Không thể xác minh phiên bản hiện tại của tệp đích."; break; }
+            // Decode once and keep the original shadow path in the durable journal.
             [preflight addObject:@{@"bundle":bundle,@"relative":relative,@"target":target,
                 @"hadOriginal":@(existed), @"originalHash":original?WQPHash(original):@"",
                 @"appliedHash":WQPHash(replacement), @"number":@(preflight.count),
-                @"version":version?:@{}}];
+                @"version":version?:@{}, @"shadow":shadow,
+                @"originalIdentity":identity?:@{},
+                @"originalType":nonFile?WQPItemType(st.st_mode):@"file"}];
             [payloads addObject:replacement];
         }
         BOOL prepared=(err==nil);
@@ -802,10 +828,21 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         if (!err) for (NSUInteger i=0; i<preflight.count; i++) {
             NSDictionary *rec=preflight[i];
             NSData *data=payloads[i];
-            BOOL success=[rec[@"hadOriginal"] boolValue]
-                ? wq_write_if_unchanged(rec[@"target"],data,rec[@"version"],&err)
-                : wq_create_file(rec[@"target"],data,&err);
-            if (!success) { err=err?:@"Áp dụng patch thất bại; cần khôi phục từ nhật ký sao lưu."; break; }
+            NSString *shadow=rec[@"shadow"];
+            BOOL success=NO;
+            if ([shadow isKindOfClass:NSString.class] && shadow.length) {
+                // Preserve the complete original, regardless of whether it is a
+                // directory or a symbolic link, then put the patch bytes at
+                // precisely the requested destination path.
+                BOOL moved=wq_rename_expecting(rec[@"target"],shadow.lastPathComponent,
+                                              rec[@"originalIdentity"],&err);
+                if (moved) success=wq_create_file(rec[@"target"],data,&err);
+            } else {
+                success=[rec[@"hadOriginal"] boolValue]
+                    ? wq_write_if_unchanged(rec[@"target"],data,rec[@"version"],&err)
+                    : wq_create_file(rec[@"target"],data,&err);
+            }
+            if (!success) { err=err?:@"Áp dụng patch thất bại; mục gốc được giữ để khôi phục."; break; }
         }
         journal[@"state"]=prepared?(err?@"needs-restore":@"applied"):@"failed-preflight";
         if (made) WQPWrite(journal,journalPath);
