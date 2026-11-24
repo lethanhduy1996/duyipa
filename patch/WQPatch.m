@@ -142,6 +142,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 @property(nonatomic,copy) NSString *selectedPatchID;
 @property(nonatomic) BOOL reopenForActions;
 @property(nonatomic) BOOL mutationInProgress;
+@property(nonatomic,copy) NSDictionary<NSString *, NSString *> *activeByHash;
 @end
 @implementation WQPatchViewController
 - (instancetype)init {
@@ -160,8 +161,8 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self findTransaction];
     [self loadPatchCatalog];
+    [self findTransaction];
     self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
     self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeNever;
     self.tableView.backgroundColor=UIColor.blackColor;
@@ -224,17 +225,51 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     }
     [self importData:data password:nil];
 }
-- (void)findTransaction {
-    self.lastTransaction=nil;
-    NSArray *folders=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:WQPStore() error:nil]
-                      sortedArrayUsingSelector:@selector(compare:)];
-    for (NSString *name in folders.reverseObjectEnumerator) {
-        NSString *path=[WQPStore() stringByAppendingPathComponent:name];
-        NSDictionary *j=WQPRead([path stringByAppendingPathComponent:@"journal.json"]);
-        if (j && ![@[@"restored",@"failed-preflight"] containsObject:j[@"state"]]) {
-            self.lastTransaction=path; break;
-        }
+// Read all unfinished journals; their original-path records reserve those targets
+// until the matching package is restored. A prepared or partially applied patch
+// still owns its targets, so another patch must not overwrite them.
+- (NSArray<NSDictionary *> *)activeTransactions {
+    NSMutableArray<NSDictionary *> *active=NSMutableArray.new;
+    NSArray<NSString *> *folders=[[NSFileManager.defaultManager
+        contentsOfDirectoryAtPath:WQPStore() error:nil]
+        sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *folder in folders) {
+        NSString *dir=[WQPStore() stringByAppendingPathComponent:folder];
+        NSDictionary *journal=WQPRead([dir stringByAppendingPathComponent:@"journal.json"]);
+        if (!journal) continue;
+        NSString *state=journal[@"state"];
+        if ([state isEqualToString:@"restored"] || [state isEqualToString:@"failed-preflight"])
+            continue;
+        [active addObject:@{@"directory":dir,@"journal":journal}];
     }
+    return active;
+}
+- (void)findTransaction {
+    NSArray<NSDictionary *> *active=[self activeTransactions];
+    NSMutableDictionary<NSString *,NSString *> *mapping=NSMutableDictionary.new;
+    for (NSDictionary *item in active) {
+        NSDictionary *journal=item[@"journal"];
+        NSString *hash=journal[@"packageHash"];
+        if ([hash isKindOfClass:NSString.class] && hash.length) mapping[hash]=item[@"directory"];
+    }
+    // Backward compatibility for pre-catalog backups without a package hash:
+    // associate only when a legacy name matches exactly one installed package.
+    for (NSDictionary *item in active) {
+        NSDictionary *journal=item[@"journal"];
+        if ([journal[@"packageHash"] isKindOfClass:NSString.class]) continue;
+        NSString *name=journal[@"name"];
+        if (![name isKindOfClass:NSString.class] || !name.length) continue;
+        NSDictionary *matched=nil;
+        for (NSDictionary *record in self.installedPatches) {
+            if (![record[@"name"] isEqualToString:name]) continue;
+            if (matched) {matched=nil; break;}
+            matched=record;
+        }
+        NSString *hash=matched[@"hash"];
+        if (hash && !mapping[hash]) mapping[hash]=item[@"directory"];
+    }
+    self.activeByHash=[mapping copy];
+    self.lastTransaction=self.selectedPatchID?mapping[self.selectedPatchID]:nil;
 }
 
 - (NSString *)patchDir {
@@ -319,6 +354,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     if (match==NSNotFound) [catalog addObject:entry]; else catalog[match]=entry;
     if (![self saveCatalog:catalog]) return NO;
     self.installedPatches=[catalog copy]; self.selectedPatchID=hash; self.patchName=entry[@"name"];
+    [self findTransaction];
     [self.tableView reloadData];
     return YES;
 }
@@ -331,7 +367,8 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     return (NSInteger)self.visiblePatches.count;
 }
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)__unused section {
-    return @"Patch";
+    NSUInteger active=self.activeByHash.count;
+    return active?[NSString stringWithFormat:@"Patch · %lu đang áp dụng",(unsigned long)active]:@"Patch";
 }
 - (CGFloat)tableView:(UITableView *__unused)tableView heightForRowAtIndexPath:(NSIndexPath *__unused)indexPath {
     return 116;
@@ -348,9 +385,11 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     cell.textLabel.textColor=UIColor.whiteColor;
     cell.textLabel.font=[UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
     NSUInteger count=[item[@"count"] unsignedIntegerValue];
-    cell.detailTextLabel.text=count
+    NSString *detail=count
         ?[NSString stringWithFormat:@"Patch · .3105 · %lu tệp",(unsigned long)count]
         :@"Patch · .3105 · Chạm để xem";
+    if (self.activeByHash[item[@"hash"]]) detail=[detail stringByAppendingString:@" · Đang áp dụng"];
+    cell.detailTextLabel.text=detail;
     cell.detailTextLabel.textColor=UIColor.secondaryLabelColor;
     cell.detailTextLabel.font=[UIFont systemFontOfSize:15];
     UIImageSymbolConfiguration *symbol=[UIImageSymbolConfiguration configurationWithPointSize:27 weight:UIImageSymbolWeightMedium];
@@ -372,6 +411,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     [self importData:data password:nil];
 }
 - (void)presentPatchActions {
+    [self findTransaction];
     NSDictionary *item=nil;
     for (NSDictionary *record in self.installedPatches)
         if ([record[@"hash"] isEqualToString:self.selectedPatchID]) { item=record; break; }
@@ -385,7 +425,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         }]];
     if (self.rules.count) [sheet addAction:[UIAlertAction actionWithTitle:@"Áp dụng patch"
         style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused action) { [self confirmApply]; }]];
-    if (self.lastTransaction) [sheet addAction:[UIAlertAction actionWithTitle:@"Khôi phục patch đang áp dụng"
+    if (self.lastTransaction) [sheet addAction:[UIAlertAction actionWithTitle:@"Khôi phục patch này"
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused action) { [self confirmRestore]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Xóa khỏi danh sách" style:UIAlertActionStyleDestructive
         handler:^(UIAlertAction *__unused action) { [self confirmDelete:item]; }]];
@@ -562,7 +602,12 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     if (self.mutationInProgress) {
         [self alert:@"Đang xử lý" message:@"Hãy hoàn thành thao tác hiện tại trước khi tiếp tục."]; return;
     }
-    if (self.lastTransaction) { [self alert:@"Đang có patch được áp dụng" message:@"Hãy khôi phục patch đang áp dụng trước khi áp dụng patch khác."]; return; }
+    [self findTransaction];
+    if (self.lastTransaction) {
+        [self alert:@"Patch này đang hoạt động"
+            message:@"Patch đã được áp dụng. Bạn có thể khôi phục riêng patch này hoặc chọn patch khác."];
+        return;
+    }
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Áp dụng patch?" message:@"Hãy đóng ứng dụng đích trước khi tiếp tục. Hệ thống sẽ sao lưu dữ liệu gốc trước khi áp dụng." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Áp dụng" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused) { [self apply]; }]];
@@ -581,9 +626,43 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         NSMutableArray<NSData *> *payloads=NSMutableArray.new;
         NSMutableDictionary<NSString *, id> *locationCache=NSMutableDictionary.new;
         NSMutableSet *seen=NSMutableSet.new;
+        NSMutableDictionary<NSString *,NSString *> *reservedTargets=NSMutableDictionary.new;
+        NSMutableDictionary<NSString *,NSString *> *reservedKeys=NSMutableDictionary.new;
+        // Recheck inside serialized WQ I/O immediately before mutation. This
+        // also covers multiple Patch views trying to apply at the same time.
+        for (NSDictionary *active in [self activeTransactions]) {
+            NSDictionary *journal=active[@"journal"];
+            NSString *owner=journal[@"name"] ?: @"patch đang áp dụng";
+            if ([journal[@"packageHash"] isEqualToString:packageHash]) {
+                err=@"Patch này đã được áp dụng hoặc chưa khôi phục xong.";
+                break;
+            }
+            NSArray *records=journal[@"records"];
+            if (![records isKindOfClass:NSArray.class] || records.count==0) {
+                err=@"Có bản sao lưu đang hoạt động nhưng thiếu thông tin đích. Hãy xử lý bản sao lưu trước.";
+                break;
+            }
+            for (NSDictionary *record in records) {
+                if (![record isKindOfClass:NSDictionary.class]) {
+                    err=@"Nhật ký patch đang hoạt động không hợp lệ."; break;
+                }
+                NSString *target=record[@"target"];
+                NSString *bundle=record[@"bundle"], *relative=record[@"relative"];
+                if (![target isKindOfClass:NSString.class] ||
+                    ![bundle isKindOfClass:NSString.class] ||
+                    ![relative isKindOfClass:NSString.class]) {
+                    err=@"Nhật ký patch đang hoạt động thiếu đường dẫn tệp."; break;
+                }
+                reservedTargets[target]=owner;
+                reservedKeys[[NSString stringWithFormat:@"%@\\0%@",bundle,relative]]=owner;
+            }
+            if (err) break;
+        }
         NSString *dir=[WQPStore() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"%013lld-%@", (long long)(NSDate.date.timeIntervalSince1970*1000),NSUUID.UUID.UUIDString]];
-        BOOL made=[NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        BOOL made=YES;
+        if (!err) made=[NSFileManager.defaultManager createDirectoryAtPath:dir
+            withIntermediateDirectories:YES attributes:nil error:nil];
         if (!made) err=@"Không thể tạo thư mục sao lưu.";
         for (NSDictionary *item in rules) {
             if (err) break;
@@ -594,6 +673,13 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             NSString *target=[root stringByAppendingPathComponent:relative];
             if (![target hasPrefix:[root stringByAppendingString:@"/"]] ||
                 !WQPSafeParents(root,target) || wq_is_backup_storage_path(target)) { err=@"Thư mục đích không tồn tại hoặc đường dẫn không an toàn."; break; }
+            NSString *logical=[NSString stringWithFormat:@"%@\0%@",bundle,relative];
+            NSString *owner=reservedTargets[target] ?: reservedKeys[logical];
+            if (owner) {
+                err=[NSString stringWithFormat:
+                    @"Xung đột tệp %@ với %@. Hãy khôi phục patch đang chiếm tệp này trước.",relative,owner];
+                break;
+            }
             if ([seen containsObject:target]) { err=@"Có nhiều quy tắc cùng ghi vào một tệp đích."; break; }
             [seen addObject:target];
             struct stat st;
@@ -623,7 +709,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
                                           @"state":prepared?@"prepared":@"failed-preflight",
                                           @"records":[preflight copy]} mutableCopy];
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
-        if (!WQPWrite(journal,journalPath)) err=err?:@"Không thể lưu nhật ký sao lưu và khôi phục.";
+        if (made && !WQPWrite(journal,journalPath)) err=err?:@"Không thể lưu nhật ký sao lưu và khôi phục.";
         if (!err) for (NSUInteger i=0; i<preflight.count; i++) {
             NSDictionary *rec=preflight[i];
             NSData *data=payloads[i];
@@ -633,7 +719,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             if (!success) { err=err?:@"Áp dụng patch thất bại; cần khôi phục từ nhật ký sao lưu."; break; }
         }
         journal[@"state"]=prepared?(err?@"needs-restore":@"applied"):@"failed-preflight";
-        WQPWrite(journal,journalPath);
+        if (made) WQPWrite(journal,journalPath);
         dispatch_async(dispatch_get_main_queue(), ^{
             self.mutationInProgress=NO;
             [self findTransaction]; [self.tableView reloadData];
@@ -645,6 +731,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     });
 }
 - (void)confirmRestore {
+    [self findTransaction];
     if (!self.lastTransaction || self.mutationInProgress) return;
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Khôi phục patch?" message:@"Chỉ khôi phục khi tệp đích vẫn khớp với dữ liệu patch đã áp dụng. Nếu tệp đã thay đổi, hệ thống sẽ từ chối ghi đè." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
@@ -652,6 +739,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)restore {
+    [self findTransaction];
     if (self.mutationInProgress || !self.lastTransaction) return;
     self.mutationInProgress=YES;
     NSString *dir=[self.lastTransaction copy];
