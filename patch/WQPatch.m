@@ -68,6 +68,41 @@ static NSString *WQPLocateCached(NSString *bundle, NSMutableDictionary<NSString 
     cache[bundle]=found ?: NSNull.null;
     return found;
 }
+// A file picked from WQFiles: derive the exact app data-container root,
+// Bundle ID and relative path. No user-entered absolute destination is trusted.
+static NSDictionary<NSString *,NSString *> *WQPDescribeAppFile(NSString *filePath, NSString **error) {
+    NSString *path=[filePath stringByStandardizingPath];
+    if ([path hasPrefix:@"/var/"]) path=[@"/private" stringByAppendingString:path];
+    NSArray<NSString *> *prefixes=@[@"/private/var/mobile/Containers/Data/Application/",
+                                    @"/private/var/containers/Data/Application/"];
+    NSString *root=nil, *relative=nil;
+    for (NSString *prefix in prefixes) {
+        if (![path hasPrefix:prefix]) continue;
+        NSString *tail=[path substringFromIndex:prefix.length];
+        NSArray<NSString *> *parts=[tail componentsSeparatedByString:@"/"];
+        if (parts.count<3 || !parts.firstObject.length) continue;
+        root=[prefix stringByAppendingString:parts.firstObject];
+        relative=[[parts subarrayWithRange:NSMakeRange(1,parts.count-1)] componentsJoinedByString:@"/"];
+        break;
+    }
+    if (!root || !WQPValidPath(relative) || wq_is_backup_storage_path(path)) {
+        if (error) *error=@"Hãy chọn tệp nằm trong Documents, Library hoặc tmp của một ứng dụng.";
+        return nil;
+    }
+    struct stat st;
+    if (!wq_stat(path,&st) || !S_ISREG(st.st_mode)) {
+        if (error) *error=@"Đường dẫn đã chọn không phải tệp thường hoặc không thể truy cập.";
+        return nil;
+    }
+    NSString *bundle=wq_bundle_id_for_container(root);
+    if (!WQPValidBundle(bundle)) bundle=wq_container_label(root);
+    if (!WQPValidBundle(bundle)) {
+        if (error) *error=@"Không xác định được Bundle ID từ thư mục ứng dụng. Kiểm tra lại ứng dụng đích.";
+        return nil;
+    }
+    return @{@"bundleID":bundle,@"relativePath":relative,@"absolutePath":path};
+}
+
 static BOOL WQPSafeParents(NSString *root, NSString *target) {
     NSString *parent=target.stringByDeletingLastPathComponent;
     while (![parent isEqualToString:root]) {
@@ -131,6 +166,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 @property(nonatomic,copy) NSString *patchName;
 @property(nonatomic,copy) NSString *lastTransaction;
 @property(nonatomic,copy) NSString *pendingImportPath;
+@property(nonatomic,copy) NSString *pendingCreatePath;
 @property(nonatomic,strong) NSURL *pendingImportURL;
 @property(nonatomic,copy) NSString *draftName;
 @property(nonatomic,copy) NSString *draftBundle;
@@ -158,6 +194,34 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (instancetype)initWithImportURL:(NSURL *)url {
     if ((self=[self init])) self.pendingImportURL=url;
     return self;
+}
++ (BOOL)canCreatePatchFromFilePath:(NSString *)path {
+    if (![path isKindOfClass:NSString.class] || !path.length) return NO;
+    NSString *normalized=[path stringByStandardizingPath];
+    return [normalized hasPrefix:@"/private/var/mobile/Containers/Data/Application/"] ||
+           [normalized hasPrefix:@"/var/mobile/Containers/Data/Application/"] ||
+           [normalized hasPrefix:@"/private/var/containers/Data/Application/"];
+}
+- (instancetype)initWithCreateFromFilePath:(NSString *)path {
+    if ((self=[self init])) self.pendingCreatePath=[path copy];
+    return self;
+}
+- (void)prepareCreateFromSelectedFile:(NSString *)filePath {
+    dispatch_async(wq_io(), ^{
+        NSString *error=nil;
+        NSDictionary *item=WQPDescribeAppFile(filePath,&error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!item) {
+                [self alert:@"Không thể tạo patch từ tệp" message:error ?: @"Không xác định được đường dẫn tệp."];
+                return;
+            }
+            self.draftBundle=item[@"bundleID"];
+            self.draftPath=item[@"relativePath"];
+            self.draftName=[NSString stringWithFormat:@"Patch - %@",self.draftPath.lastPathComponent];
+            self.draftPassword=@"";
+            [self startCreate];
+        });
+    });
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -191,6 +255,12 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (void)closePatch {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self loadPatchCatalog];
+    [self findTransaction];
+    [self.tableView reloadData];
+}
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if (self.navigationController.presentingViewController &&
@@ -199,7 +269,10 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc]
              initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closePatch)];
     }
-    if (self.pendingImportPath.length) {
+    if (self.pendingCreatePath.length) {
+        NSString *path=self.pendingCreatePath; self.pendingCreatePath=nil;
+        [self prepareCreateFromSelectedFile:path];
+    } else if (self.pendingImportPath.length) {
         NSString *path=self.pendingImportPath; self.pendingImportPath=nil;
         dispatch_async(wq_io(), ^{
             NSString *err=nil; NSData *data=wq_read(path,64*1024*1024+1,&err);
@@ -511,10 +584,13 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         message:@"Nhập tên, bundle ID ứng dụng và đường dẫn tương đối đến tệp sẽ thay thế. Tiếp theo chọn nội dung từ Files."
         preferredStyle:UIAlertControllerStyleAlert];
     NSArray<NSString *> *placeholders=@[@"Tên patch", @"Bundle ID (com.example.app)", @"Đích (Documents/config.json)", @"Mật khẩu (có thể bỏ trống)"];
-    for (NSString *placeholder in placeholders) {
+    NSArray<NSString *> *initial=@[self.draftName?:@"",self.draftBundle?:@"",self.draftPath?:@"",self.draftPassword?:@""];
+    for (NSUInteger i=0;i<placeholders.count;i++) {
+        NSString *placeholder=placeholders[i], *value=initial[i];
         [form addTextFieldWithConfigurationHandler:^(UITextField *f) {
             f.placeholder=placeholder;
-            if ([placeholder hasPrefix:@"Mật khẩu"]) f.secureTextEntry=YES;
+            f.text=value;
+            if (i==3) f.secureTextEntry=YES;
             f.autocorrectionType=UITextAutocorrectionTypeNo;
             f.autocapitalizationType=UITextAutocapitalizationTypeNone;
         }];
