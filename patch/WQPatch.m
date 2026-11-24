@@ -67,6 +67,54 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     }
     return YES;
 }
+// Convert the codec's technical error codes to Vietnamese at the presentation layer.
+// Keep the codec error identifiers stable so package parsing/compatibility is unchanged.
+static NSString *WQPVietnameseCodecError(NSString *reason) {
+    if (![reason isKindOfClass:NSString.class] || reason.length == 0)
+        return @"Không xác định được nguyên nhân.";
+    if ([reason hasPrefix:@"unsupported 3105 schema v"]) {
+        NSRegularExpression *re=[NSRegularExpression regularExpressionWithPattern:@"schema v([0-9]+)"
+            options:0 error:nil];
+        NSTextCheckingResult *match=[re firstMatchInString:reason options:0 range:NSMakeRange(0,reason.length)];
+        NSString *version=match ? [reason substringWithRange:[match rangeAtIndex:1]] : @"không xác định";
+        return [NSString stringWithFormat:@"Gói .3105 sử dụng phiên bản định dạng %@ chưa được hỗ trợ đầy đủ.",version];
+    }
+    NSDictionary<NSString *, NSString *> *messages=@{
+        @"password_required":@"Gói patch có mật khẩu. Vui lòng nhập mật khẩu.",
+        @"invalid key size":@"Kích thước khóa mã hóa không hợp lệ.",
+        @"invalid password parameters":@"Tham số bảo vệ bằng mật khẩu không hợp lệ.",
+        @"key derivation failed":@"Không thể tạo khóa giải mã từ mật khẩu.",
+        @"not a 3105 file":@"Tệp được chọn không phải gói patch .3105 hợp lệ.",
+        @"missing public key":@"Gói patch thiếu khóa giải mã cần thiết.",
+        @"incorrect password or corrupted package":@"Mật khẩu không đúng hoặc gói patch bị hỏng.",
+        @"Unsupported v9 payload structure":@"Cấu trúc dữ liệu của gói patch v9 không được hỗ trợ.",
+        @"v9 package requires App Group, settings or unsupported fields; cannot safely apply here":@"Gói patch v9 chứa App Group, thiết lập hoặc trường dữ liệu chưa được hỗ trợ; không thể áp dụng an toàn.",
+        @"v9 directory operation requires unsupported container type":@"Gói patch v9 sử dụng loại vùng dữ liệu không được hỗ trợ.",
+        @"v9 rule uses mergePlist, mergeJson, App Group or unsupported operation; not safe to apply as replacement":@"Gói patch v9 yêu cầu gộp dữ liệu hoặc thao tác chưa được hỗ trợ; không thể thay thế tệp một cách an toàn.",
+        @"v9 private patch must be password-protected":@"Gói patch riêng tư v9 phải được bảo vệ bằng mật khẩu.",
+        @"package ID mismatch":@"Mã định danh gói patch không khớp.",
+        @"invalid number of rules":@"Số lượng quy tắc trong gói patch không hợp lệ.",
+        @"Unsupported v9 patch operation/container":@"Thao tác hoặc vùng dữ liệu trong gói patch v9 không được hỗ trợ.",
+        @"file integrity check failed":@"Tệp trong gói patch không vượt qua kiểm tra tính toàn vẹn.",
+        @"duplicate or oversized file":@"Gói patch chứa tệp trùng lặp hoặc vượt quá giới hạn kích thước.",
+        @"package has no file replacements":@"Gói patch không có tệp thay thế.",
+        @"package is empty or too large":@"Gói patch trống hoặc quá lớn.",
+        @"import error":@"Không thể nhập gói patch.",
+        @"incorrect password, corrupted package, or unsupported 3105 schema":@"Mật khẩu không đúng, tệp bị hỏng hoặc phiên bản gói patch chưa được hỗ trợ.",
+        @"secure random generator failed":@"Không thể tạo khóa mã hóa ngẫu nhiên.",
+        @"AES-GCM failed":@"Không thể mã hóa dữ liệu gói patch.",
+        @"invalid patch name or file list":@"Tên patch hoặc danh sách tệp không hợp lệ.",
+        @"invalid bundle identifier or target path":@"Mã ứng dụng hoặc đường dẫn đích không hợp lệ.",
+        @"duplicate target, invalid base64 or file larger than 8 MiB":@"Tệp đích bị trùng, nội dung không hợp lệ hoặc vượt quá 8 MB.",
+        @"missing patch description":@"Thiếu thông tin để tạo patch.",
+        @"unable to create 3105 package":@"Không thể tạo gói patch .3105."
+    };
+    NSString *localized=messages[reason];
+    if (localized) return localized;
+    // Preserve an unknown technical reason for diagnosis, but label it in Vietnamese.
+    return [NSString stringWithFormat:@"Không thể xử lý gói patch. Chi tiết kỹ thuật: %@",reason];
+}
+
 @interface WQPatchViewController ()
 @property(nonatomic,copy) NSArray<NSDictionary *> *rules;
 @property(nonatomic,copy) NSString *patchName;
@@ -253,7 +301,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)pick {
@@ -345,7 +393,7 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     NSString *encoded=response[@"base64"];
     NSData *package=[encoded isKindOfClass:NSString.class]?[[NSData alloc] initWithBase64EncodedString:encoded options:0]:nil;
     if (!package) {
-        [self alert:@"Tạo patch thất bại" message:response[@"error"] ?: @"Không thể mã hóa gói .3105"];
+        [self alert:@"Tạo patch thất bại" message:response[@"error"] ? WQPVietnameseCodecError(response[@"error"]) : @"Không thể mã hóa gói .3105"];
         return;
     }
     NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
@@ -370,19 +418,19 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
     NSDictionary *response=bytes?[NSJSONSerialization JSONObjectWithData:bytes options:0 error:nil]:nil;
     NSString *error=response[@"error"];
     if ([error isEqualToString:@"password_required"] && !password.length) {
-        UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Patch password" message:@"Enter package password" preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Mật khẩu gói patch" message:@"Nhập mật khẩu để mở gói .3105." preferredStyle:UIAlertControllerStyleAlert];
         [a addTextFieldWithConfigurationHandler:^(UITextField *field){ field.secureTextEntry=YES; }];
-        [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Import" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused unused) {
+        [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Nhập patch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused unused) {
             [self importData:data password:a.textFields.firstObject.text ?: @""];
         }]];
         [self presentViewController:a animated:YES completion:nil];
         return;
     }
     if (error || ![response[@"files"] isKindOfClass:NSArray.class]) {
-        [self alert:@"Import failed" message:error ?: @"Invalid package"]; return;
+        [self alert:@"Nhập patch thất bại" message:error ? WQPVietnameseCodecError(error) : @"Gói patch không hợp lệ hoặc không thể giải mã."]; return;
     }
-    self.patchName=response[@"name"] ?: @"Imported patch";
+    self.patchName=response[@"name"] ?: @"Patch đã nhập";
     self.rules=response[@"files"];
     // Save the original authenticated package; never persist the decrypted payload or its password.
     NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
@@ -397,10 +445,10 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
 }
 - (void)confirmApply {
     if (!self.rules.count) return;
-    if (self.lastTransaction) { [self alert:@"Active patch" message:@"Restore the active patch before applying a new one"]; return; }
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Apply patch?" message:@"Close targeted apps first. A safety backup will be created." preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Apply" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused) { [self apply]; }]];
+    if (self.lastTransaction) { [self alert:@"Đang có patch được áp dụng" message:@"Hãy khôi phục patch đang áp dụng trước khi áp dụng patch khác."]; return; }
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Áp dụng patch?" message:@"Hãy đóng ứng dụng đích trước khi tiếp tục. Hệ thống sẽ sao lưu dữ liệu gốc trước khi áp dụng." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Áp dụng" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused) { [self apply]; }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)apply {
@@ -413,32 +461,32 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         NSString *dir=[WQPStore() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"%013lld-%@", (long long)(NSDate.date.timeIntervalSince1970*1000),NSUUID.UUID.UUIDString]];
         BOOL made=[NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-        if (!made) err=@"Cannot create backup directory";
+        if (!made) err=@"Không thể tạo thư mục sao lưu.";
         for (NSDictionary *item in rules) {
             if (err) break;
             NSString *bundle=item[@"bundleID"], *relative=item[@"path"];
-            if (!WQPValidBundle(bundle) || !WQPValidPath(relative)) { err=@"Invalid target bundle or path"; break; }
+            if (!WQPValidBundle(bundle) || !WQPValidPath(relative)) { err=@"Mã ứng dụng hoặc đường dẫn đích không hợp lệ."; break; }
             NSString *root=WQPLocate(bundle);
-            if (!root) { err=[NSString stringWithFormat:@"Cannot uniquely locate app %@",bundle]; break; }
+            if (!root) { err=[NSString stringWithFormat:@"Không xác định được duy nhất thư mục của ứng dụng %@.",bundle]; break; }
             NSString *target=[root stringByAppendingPathComponent:relative];
             if (![target hasPrefix:[root stringByAppendingString:@"/"]] ||
-                !WQPSafeParents(root,target) || wq_is_backup_storage_path(target)) { err=@"Unsafe or missing destination parent"; break; }
-            if ([seen containsObject:target]) { err=@"Duplicate destination"; break; }
+                !WQPSafeParents(root,target) || wq_is_backup_storage_path(target)) { err=@"Thư mục đích không tồn tại hoặc đường dẫn không an toàn."; break; }
+            if ([seen containsObject:target]) { err=@"Có nhiều quy tắc cùng ghi vào một tệp đích."; break; }
             [seen addObject:target];
             struct stat st;
             BOOL existed=wq_stat(target,&st);
-            if (existed && !S_ISREG(st.st_mode)) { err=@"Target is not a regular file"; break; }
+            if (existed && !S_ISREG(st.st_mode)) { err=@"Đường dẫn đích không phải tệp thông thường."; break; }
             NSData *replacement=[[NSData alloc] initWithBase64EncodedString:item[@"data"] options:0];
-            if (!replacement || replacement.length>8*1024*1024) { err=@"Invalid or oversized payload"; break; }
+            if (!replacement || replacement.length>8*1024*1024) { err=@"Dữ liệu thay thế không hợp lệ hoặc vượt quá 8 MB."; break; }
             NSData *original=nil;
             if (existed) {
                 original=wq_read(target,8*1024*1024+1,&err);
-                if (!original || original.length>8*1024*1024) { err=err ?: @"Cannot back up target larger than 8 MB"; break; }
+                if (!original || original.length>8*1024*1024) { err=err ?: @"Không thể sao lưu tệp đích lớn hơn 8 MB."; break; }
                 NSString *backup=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%lu.original",(unsigned long)preflight.count]];
-                if (![original writeToFile:backup options:NSDataWritingAtomic error:nil]) { err=@"Writing original backup failed"; break; }
+                if (![original writeToFile:backup options:NSDataWritingAtomic error:nil]) { err=@"Không thể lưu bản sao dữ liệu gốc."; break; }
             }
             NSDictionary *version=existed?wq_file_version(target):nil;
-            if (existed && !version) { err=@"Cannot verify target version"; break; }
+            if (existed && !version) { err=@"Không thể xác minh phiên bản hiện tại của tệp đích."; break; }
             [preflight addObject:@{@"bundle":bundle,@"relative":relative,@"target":target,
                 @"hadOriginal":@(existed), @"originalHash":original?WQPHash(original):@"",
                 @"appliedHash":WQPHash(replacement), @"number":@(preflight.count),
@@ -452,28 +500,28 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         BOOL prepared=(err==nil);
         NSMutableDictionary *journal=[@{@"name":name,@"state":prepared?@"prepared":@"failed-preflight", @"records":safe} mutableCopy];
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
-        if (!WQPWrite(journal,journalPath)) err=err?:@"Cannot write durable journal";
+        if (!WQPWrite(journal,journalPath)) err=err?:@"Không thể lưu nhật ký sao lưu và khôi phục.";
         if (!err) for (NSDictionary *rec in preflight) {
             NSData *data=[[NSData alloc] initWithBase64EncodedString:rec[@"replacement"] options:0];
             BOOL success=[rec[@"hadOriginal"] boolValue]
                 ? wq_write_if_unchanged(rec[@"target"],data,rec[@"version"],&err)
                 : wq_create_file(rec[@"target"],data,&err);
-            if (!success) { err=err?:@"Patch failed; restore from journal"; break; }
+            if (!success) { err=err?:@"Áp dụng patch thất bại; cần khôi phục từ nhật ký sao lưu."; break; }
         }
         journal[@"state"]=prepared?(err?@"needs-restore":@"applied"):@"failed-preflight";
         WQPWrite(journal,journalPath);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self findTransaction]; [self.tableView reloadData];
-            [self alert:err?@"Apply incomplete":@"Patch applied"
-                message:err?:[NSString stringWithFormat:@"%lu files applied; backups preserved.",(unsigned long)preflight.count]];
+            [self alert:err?@"Áp dụng patch chưa hoàn tất":@"Áp dụng patch thành công"
+                message:err?:[NSString stringWithFormat:@"Đã áp dụng %lu tệp. Bản sao lưu được giữ lại.",(unsigned long)preflight.count]];
         });
     });
 }
 - (void)confirmRestore {
     if (!self.lastTransaction) return;
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Restore patch?" message:@"Restore is refused if any target no longer matches the patch hash." preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused){ [self restore]; }]];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Khôi phục patch?" message:@"Chỉ khôi phục khi tệp đích vẫn khớp với dữ liệu patch đã áp dụng. Nếu tệp đã thay đổi, hệ thống sẽ từ chối ghi đè." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Khôi phục" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused){ [self restore]; }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)restore {
@@ -482,42 +530,42 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
         NSMutableDictionary *journal=[WQPRead(journalPath) mutableCopy];
         NSArray *recs=journal[@"records"];
-        NSString *err=recs?nil:@"Missing journal";
+        NSString *err=recs?nil:@"Không tìm thấy nhật ký khôi phục.";
         for (NSDictionary *rec in recs.reverseObjectEnumerator) {
             if (err) break;
             NSString *root=WQPLocate(rec[@"bundle"]);
             NSString *target=root?[root stringByAppendingPathComponent:rec[@"relative"]]:nil;
             if (!root || ![target isEqualToString:rec[@"target"]] || !WQPSafeParents(root,target)) {
-                err=@"Container or target identity changed"; break;
+                err=@"Thư mục ứng dụng hoặc tệp đích đã thay đổi."; break;
             }
             struct stat st;
             BOOL exists=wq_stat(target,&st);
             if (!exists) {
-                if ([rec[@"hadOriginal"] boolValue]) { err=@"Original file is missing; manual recovery required"; break; }
+                if ([rec[@"hadOriginal"] boolValue]) { err=@"Không tìm thấy tệp gốc; cần kiểm tra và khôi phục thủ công."; break; }
                 continue;
             }
-            if (!S_ISREG(st.st_mode)) { err=@"File type changed"; break; }
+            if (!S_ISREG(st.st_mode)) { err=@"Loại tệp đích đã thay đổi."; break; }
             NSData *current=wq_read(target,8*1024*1024+1,&err);
-            if (!current) { err=err?:@"Cannot read patch target"; break; }
+            if (!current) { err=err?:@"Không thể đọc tệp đích."; break; }
             NSString *currentHash=WQPHash(current);
             if ([rec[@"hadOriginal"] boolValue] && [currentHash isEqualToString:rec[@"originalHash"]]) continue;
             if (![currentHash isEqualToString:rec[@"appliedHash"]]) {
-                err=@"Patch target changed since application; refusing overwrite"; break;
+                err=@"Tệp đích đã thay đổi sau khi áp dụng patch; hệ thống từ chối ghi đè."; break;
             }
             if ([rec[@"hadOriginal"] boolValue]) {
                 NSString *backup=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.original",rec[@"number"]]];
                 NSData *original=[NSData dataWithContentsOfFile:backup];
                 if (!original || ![WQPHash(original) isEqualToString:rec[@"originalHash"]]) {
-                    err=@"Backup integrity failure"; break;
+                    err=@"Bản sao lưu không vượt qua kiểm tra tính toàn vẹn."; break;
                 }
                 NSDictionary *version=wq_file_version(target);
                 if (!version || !wq_write_if_unchanged(target,original,version,&err)) {
-                    err=err?:@"Restore failed"; break;
+                    err=err?:@"Khôi phục thất bại."; break;
                 }
             } else {
                 NSDictionary *identity=wq_item_identity(target);
                 if (!identity || !wq_delete_expecting(target,identity,&err)) {
-                    err=err?:@"Could not remove added file"; break;
+                    err=err?:@"Không thể xóa tệp được tạo thêm khi áp dụng patch."; break;
                 }
             }
         }
@@ -527,8 +575,8 @@ static BOOL WQPSafeParents(NSString *root, NSString *target) {
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self findTransaction]; [self.tableView reloadData];
-            [self alert:err?@"Restore incomplete":@"Restored"
-                message:err?:@"Original bytes restored or newly created files removed. Backups retained."];
+            [self alert:err?@"Khôi phục chưa hoàn tất":@"Khôi phục thành công"
+                message:err?:@"Đã khôi phục dữ liệu gốc hoặc xóa các tệp được tạo thêm. Bản sao lưu vẫn được giữ lại."];
         });
     });
 }
