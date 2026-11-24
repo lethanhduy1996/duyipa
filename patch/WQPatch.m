@@ -859,7 +859,9 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 - (void)confirmRestore {
     [self findTransaction];
     if (!self.lastTransaction || self.mutationInProgress) return;
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Khôi phục patch?" message:@"Chỉ khôi phục khi tệp đích vẫn khớp với dữ liệu patch đã áp dụng. Nếu tệp đã thay đổi, hệ thống sẽ từ chối ghi đè." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Khôi phục patch?"
+        message:@"Đưa tệp, thư mục hoặc liên kết gốc về đúng đường dẫn. Nội dung thay thế tại đường dẫn đó sẽ được đưa ra khỏi vị trí đích."
+        preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Khôi phục" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused){ [self restore]; }]];
     [self presentViewController:a animated:YES completion:nil];
@@ -885,29 +887,103 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             }
             struct stat st;
             BOOL exists=wq_stat(target,&st);
-            if (!exists) {
-                if ([rec[@"hadOriginal"] boolValue]) { err=@"Không tìm thấy tệp gốc; cần kiểm tra và khôi phục thủ công."; break; }
+            NSString *shadow=[rec[@"shadow"] isKindOfClass:NSString.class]?rec[@"shadow"]:@"";
+            if (shadow.length) {
+                // Directory/link originals are preserved as sibling names.
+                // If the apply step stopped before the rename, the original
+                // identity is already at the target; no operation is needed.
+                struct stat shadowSt;
+                BOOL hasShadow=wq_stat(shadow,&shadowSt);
+                NSDictionary *originalID=rec[@"originalIdentity"];
+                if (!hasShadow) {
+                    NSDictionary *existingID=exists?wq_item_identity(target):nil;
+                    if (existingID && [existingID isEqualToDictionary:originalID]) continue;
+                    err=[NSString stringWithFormat:
+                        @"Không tìm thấy mục gốc ở %@. Chưa thể khôi phục %@.",shadow,rec[@"relative"]];
+                    break;
+                }
+                NSDictionary *shadowID=wq_item_identity(shadow);
+                if (!shadowID || ![shadowID isEqualToDictionary:originalID]) {
+                    err=@"Mục sao lưu gốc đã thay đổi; không thể xác định dữ liệu cần khôi phục.";
+                    break;
+                }
+                // Move the present patch entry aside first. This works for
+                // files, nonempty directories and symlinks without following
+                // or copying them. If the original cannot be returned, move
+                // the displaced item back as a best-effort rollback.
+                NSString *displaced=nil;
+                if (exists) {
+                    displaced=[target.stringByDeletingLastPathComponent
+                        stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@".wqpatch-discard-%@",NSUUID.UUID.UUIDString]];
+                    NSDictionary *presentID=wq_item_identity(target);
+                    if (!presentID || !wq_rename_expecting(target,displaced.lastPathComponent,presentID,&err)) {
+                        err=err?:@"Không thể di chuyển bản patch hiện tại trước khi khôi phục.";
+                        break;
+                    }
+                }
+                NSString *moveError=nil;
+                if (!wq_rename_expecting(shadow,target.lastPathComponent,shadowID,&moveError)) {
+                    if (displaced) {
+                        NSString *rollbackError=nil;
+                        BOOL rolledBack=wq_rename_expecting(displaced,target.lastPathComponent,
+                                                           wq_item_identity(displaced),&rollbackError);
+                        if (!rolledBack) {
+                            err=[NSString stringWithFormat:
+                                @"Khôi phục bị gián đoạn. Mục gốc ở %@; bản patch ở %@. Lỗi: %@",
+                                shadow,displaced,rollbackError?:moveError?:@"không rõ"];
+                        } else err=moveError?:@"Không thể đặt mục gốc về đường dẫn ban đầu.";
+                    } else err=moveError?:@"Không thể đặt mục gốc về đường dẫn ban đầu.";
+                    break;
+                }
+                if (displaced) {
+                    // Cleanup is best-effort after the original has returned.
+                    // The WQ delete API itself keeps a recovery backup.
+                    struct stat displacedSt;
+                    if (wq_stat(displaced,&displacedSt)) {
+                        NSDictionary *displacedID=wq_item_identity(displaced);
+                        NSString *cleanupError=nil;
+                        BOOL removed=S_ISDIR(displacedSt.st_mode)
+                            ? wq_delete_tree_expecting(displaced,displacedID,nil,nil,NULL,NULL,&cleanupError)
+                            : wq_delete_expecting(displaced,displacedID,&cleanupError);
+                        if (!removed) {
+                            // Do not mark the full operation completed while an
+                            // untracked displaced entry remains. Report its path.
+                            err=[NSString stringWithFormat:
+                                @"Đã đưa mục gốc về vị trí cũ, nhưng chưa dọn được bản patch tại %@: %@",
+                                displaced,cleanupError?:@"không rõ"];
+                            break;
+                        }
+                    }
+                }
                 continue;
             }
-            if (!S_ISREG(st.st_mode)) { err=@"Loại tệp đích đã thay đổi."; break; }
-            NSData *current=wq_read(target,8*1024*1024+1,&err);
-            if (!current) { err=err?:@"Không thể đọc tệp đích."; break; }
-            NSString *currentHash=WQPHash(current);
-            if ([rec[@"hadOriginal"] boolValue] && [currentHash isEqualToString:rec[@"originalHash"]]) continue;
-            if (![currentHash isEqualToString:rec[@"appliedHash"]]) {
-                err=@"Tệp đích đã thay đổi sau khi áp dụng patch; hệ thống từ chối ghi đè."; break;
+            if (exists && !S_ISREG(st.st_mode)) {
+                err=[NSString stringWithFormat:
+                    @"Đích %@ hiện là %@. Cần kiểm tra vì bản sao lưu gốc là tệp.",
+                    rec[@"relative"],WQPItemType(st.st_mode)];
+                break;
             }
             if ([rec[@"hadOriginal"] boolValue]) {
-                NSString *backup=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.original",rec[@"number"]]];
+                NSString *backup=[dir stringByAppendingPathComponent:
+                    [NSString stringWithFormat:@"%@.original",rec[@"number"]]];
                 NSData *original=[NSData dataWithContentsOfFile:backup];
                 if (!original || ![WQPHash(original) isEqualToString:rec[@"originalHash"]]) {
                     err=@"Bản sao lưu không vượt qua kiểm tra tính toàn vẹn."; break;
                 }
-                NSDictionary *version=wq_file_version(target);
-                if (!version || !wq_write_if_unchanged(target,original,version,&err)) {
-                    err=err?:@"Khôi phục thất bại."; break;
+                if (exists) {
+                    NSData *current=wq_read(target,8*1024*1024+1,&err);
+                    if (!current) { err=err?:@"Không thể đọc tệp đích."; break; }
+                    if ([WQPHash(current) isEqualToString:rec[@"originalHash"]]) continue;
+                    // Deliberate force restore: the saved original wins even if
+                    // the app has modified the patched regular file since apply.
+                    if (!wq_write(target,original,&err)) {
+                        err=err?:@"Không thể ghi lại tệp gốc."; break;
+                    }
+                } else if (!wq_create_file(target,original,&err)) {
+                    err=err?:@"Không thể tạo lại tệp gốc."; break;
                 }
-            } else {
+            } else if (exists) {
                 NSDictionary *identity=wq_item_identity(target);
                 if (!identity || !wq_delete_expecting(target,identity,&err)) {
                     err=err?:@"Không thể xóa tệp được tạo thêm khi áp dụng patch."; break;
