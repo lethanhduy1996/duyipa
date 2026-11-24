@@ -62,6 +62,36 @@ s = sub_once(s,
                 }]];
         }
         // Inside an app's data container: let the Cache Cleaner empty this""")
+# Disable automatic update checks and release banners in this custom Patch build.
+# Upstream checks on both Prism/Classic startup; remove both invocations rather
+# than relying on a persisted preference that might be enabled on reinstall.
+# Other network features, such as user-initiated sharing, remain untouched.
+assert s.count('    [self checkForUpdate];') == 2, 'upstream update-check call sites changed'
+s = s.replace('    [self checkForUpdate];',
+              '    // WQFiles Patch: automatic release checks and update banners disabled.')
+# Keep the setting visible but explicitly off/disabled in both designs.
+s = sub_once(s,
+    ': indexPath.row == 4 ? ![defaults boolForKey:kWQUpdateCheckOffPref]',
+    ': indexPath.row == 4 ? NO /* Patch build: updates disabled */')
+s = sub_once(s,
+    ': row == 5 ? ![defaults boolForKey:kWQUpdateCheckOffPref]',
+    ': row == 5 ? NO /* Patch build: updates disabled */')
+s = sub_once(s,
+    '        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {',
+    '        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {') if False else s
+# Both settings UIs contain exactly one update-enabled toggle; lock them off.
+prism_anchor = '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {'
+assert s.count(prism_anchor) == 1, 'Prism Settings anchor changed'
+s=s.replace(prism_anchor,
+    '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        if (indexPath.row == 4) toggle.enabled = NO;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {')
+classic_anchor='        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 0) {'
+assert s.count(classic_anchor) == 1, 'Classic Settings anchor changed'
+s=s.replace(classic_anchor,
+    '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        if (row == 5) toggle.enabled = NO;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 0) {')
+old = 'Check for Updates: twice a day WQ Files reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.'
+assert s.count(old) == 2, 'update help text changed'
+s=s.replace(old,'Check for Updates: automatically checking for updates is disabled in this Patch build; no update notifications appear.')
+
 # Opening a .3105 file inside WQFiles routes to the importer.
 s = sub_once(s,
     'if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {',
