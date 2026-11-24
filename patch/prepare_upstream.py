@@ -46,6 +46,24 @@ s=sub_once(s,
 # now index 2, so retarget its hardcoded cleanup label to index 3.
 s=sub_once(s, 'WQNavigationController *cleanNav = self.viewControllers[2];',
                 'WQNavigationController *cleanNav = self.viewControllers[3];')
+# Long-press a regular file in WQFiles' app-data browser to create a patch
+# with its Bundle ID and relative path filled in automatically.
+s = sub_once(s,
+    '        // Inside an app\\'s data container: let the Cache Cleaner empty this',
+    '        if (!current.isDir && current.isRegular && !current.isLink &&\\n'
+    '            [WQPatchViewController canCreatePatchFromFilePath:current.path]) {\\n'
+    '            [actions addObject:[UIAction actionWithTitle:@"Tạo patch từ tệp này"\\n'
+    '                image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil\\n'
+    '                handler:^(UIAction *__unused action) {\\n'
+    '                    WQItem *selected=currentItem();\\n'
+    '                    if (!selected || !weakSelf) return;\\n'
+    '                    WQPatchViewController *patch=[[WQPatchViewController alloc]\\n'
+    '                        initWithCreateFromFilePath:selected.path];\\n'
+    '                    [weakSelf.navigationController pushViewController:patch animated:YES];\\n'
+    '                }]];\\n'
+    '        }\\n'
+    '        // Inside an app\\'s data container: let the Cache Cleaner empty this')
+
 # Opening a .3105 file inside WQFiles routes to the importer.
 s = sub_once(s,
     'if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {',
