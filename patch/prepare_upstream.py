@@ -41,7 +41,11 @@ s=sub_once(s,
 s=sub_once(s,
     'else if (index == 3) [self.navigationController pushViewController:[WQPrismVaultViewController new] animated:YES];',
     'else if (index == 4) [self.navigationController pushViewController:[WQPrismVaultViewController new] animated:YES];')
-s=sub_once(s, 'initWithTitle:@"Patch" image:', 'initWithTitle:@"Đã cài" image:')
+# Keep the selected center tab's bottom label as "Patch" (the page header stays "Đã cài").
+# Upstream's tabDidAppear resets the third tab to "Clean"; the new Patch tab is
+# now index 2, so retarget its hardcoded cleanup label to index 3.
+s=sub_once(s, 'WQNavigationController *cleanNav = self.viewControllers[2];',
+                'WQNavigationController *cleanNav = self.viewControllers[3];')
 # Opening a .3105 file inside WQFiles routes to the importer.
 s = sub_once(s,
     'if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {',
