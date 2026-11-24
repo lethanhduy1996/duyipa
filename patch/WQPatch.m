@@ -141,6 +141,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
 @property(nonatomic,copy) NSArray<NSDictionary *> *installedPatches;
 @property(nonatomic,copy) NSString *selectedPatchID;
 @property(nonatomic) BOOL reopenForActions;
+@property(nonatomic) BOOL mutationInProgress;
 @end
 @implementation WQPatchViewController
 - (instancetype)init {
@@ -394,7 +395,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 - (void)confirmDelete:(NSDictionary *)item {
-    if (self.lastTransaction) {
+    if (self.lastTransaction || self.mutationInProgress) {
         [self alert:@"Không thể xóa" message:@"Hãy khôi phục patch đang áp dụng trước khi xóa gói."];
         return;
     }
@@ -515,20 +516,13 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         [self alert:@"Tạo patch thất bại" message:response[@"error"] ? WQPVietnameseCodecError(response[@"error"]) : @"Không thể mã hóa gói .3105"];
         return;
     }
-    NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-    NSString *directory=[documents stringByAppendingPathComponent:@"Patches"];
-    [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
-    NSString *filename=[NSString stringWithFormat:@"%@.3105",NSUUID.UUID.UUIDString];
-    NSString *path=[directory stringByAppendingPathComponent:filename];
-    if (![package writeToFile:path options:NSDataWritingAtomic error:nil]) {
-        [self alert:@"Không thể lưu patch" message:@"Kiểm tra bộ nhớ thiết bị"]; return;
+    if (![self registerPackage:package name:self.draftName count:1 schema:@3]) {
+        [self alert:@"Không thể lưu patch" message:@"Không thể lưu gói hoặc cập nhật danh sách đã cài."];
+        self.draftPassword=nil; return;
     }
-    self.patchName=self.draftName;
     self.rules=draft[@"files"];
-    [NSUserDefaults.standardUserDefaults setObject:path forKey:@"WQPatchLastFile"];
-    [NSUserDefaults.standardUserDefaults setObject:self.patchName forKey:@"WQPatchLastName"];
-    [self.tableView reloadData];
-    [self alert:@"Đã tạo gói .3105" message:[NSString stringWithFormat:@"Đã lưu vào Tệp → Trên iPhone → WQ Files → Patches → %@. Có thể mở, chia sẻ hoặc nhập lại.",filename]];
+    self.draftPassword=nil;
+    [self alert:@"Đã tạo gói .3105" message:@"Đã thêm patch mới vào danh sách. Các patch trước đó được giữ nguyên."];
 }
 - (void)importData:(NSData *)data password:(NSString *)password {
     char *raw=wq_decode_3105(data.bytes,(intptr_t)data.length,password.UTF8String);
@@ -547,23 +541,27 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         return;
     }
     if (error || ![response[@"files"] isKindOfClass:NSArray.class]) {
+        self.reopenForActions=NO;
         [self alert:@"Nhập patch thất bại" message:error ? WQPVietnameseCodecError(error) : @"Gói patch không hợp lệ hoặc không thể giải mã."]; return;
     }
-    self.patchName=response[@"name"] ?: @"Patch đã nhập";
-    self.rules=response[@"files"];
-    // Save the original authenticated package; never persist the decrypted payload or its password.
-    NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-    NSString *dir=[documents stringByAppendingPathComponent:@"Patches"];
-    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSString *path=[dir stringByAppendingPathComponent:[WQPHash(data) stringByAppendingPathExtension:@"3105"]];
-    if ([data writeToFile:path options:NSDataWritingAtomic error:nil]) {
-        [NSUserDefaults.standardUserDefaults setObject:path forKey:@"WQPatchLastFile"];
-        [NSUserDefaults.standardUserDefaults setObject:self.patchName forKey:@"WQPatchLastName"];
+    NSString *name=response[@"name"] ?: @"Patch đã nhập";
+    NSArray *files=response[@"files"];
+    if (![self registerPackage:data name:name count:files.count schema:response[@"schemaVersion"]]) {
+        self.reopenForActions=NO;
+        [self alert:@"Lưu patch thất bại" message:@"Không thể lưu gói hoặc cập nhật danh sách đã cài."];
+        return;
     }
-    [self.tableView reloadData];
+    self.rules=files;
+    if (self.reopenForActions) {
+        self.reopenForActions=NO;
+        [self presentPatchActions];
+    }
 }
 - (void)confirmApply {
-    if (!self.rules.count) return;
+    if (!self.rules.count || !self.selectedPatchID) return;
+    if (self.mutationInProgress) {
+        [self alert:@"Đang xử lý" message:@"Hãy hoàn thành thao tác hiện tại trước khi tiếp tục."]; return;
+    }
     if (self.lastTransaction) { [self alert:@"Đang có patch được áp dụng" message:@"Hãy khôi phục patch đang áp dụng trước khi áp dụng patch khác."]; return; }
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Áp dụng patch?" message:@"Hãy đóng ứng dụng đích trước khi tiếp tục. Hệ thống sẽ sao lưu dữ liệu gốc trước khi áp dụng." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
@@ -571,8 +569,11 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)apply {
+    if (self.mutationInProgress) return;
+    self.mutationInProgress=YES;
     NSArray *rules=[self.rules copy];
     NSString *name=[self.patchName copy];
+    NSString *packageHash=[self.selectedPatchID copy];
     dispatch_async(wq_io(), ^{
         NSTimeInterval started=NSDate.timeIntervalSinceReferenceDate;
         NSString *err=nil;
@@ -618,7 +619,8 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             [payloads addObject:replacement];
         }
         BOOL prepared=(err==nil);
-        NSMutableDictionary *journal=[@{@"name":name,@"state":prepared?@"prepared":@"failed-preflight",
+        NSMutableDictionary *journal=[@{@"name":name,@"packageHash":packageHash,
+                                          @"state":prepared?@"prepared":@"failed-preflight",
                                           @"records":[preflight copy]} mutableCopy];
         NSString *journalPath=[dir stringByAppendingPathComponent:@"journal.json"];
         if (!WQPWrite(journal,journalPath)) err=err?:@"Không thể lưu nhật ký sao lưu và khôi phục.";
@@ -633,6 +635,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
         journal[@"state"]=prepared?(err?@"needs-restore":@"applied"):@"failed-preflight";
         WQPWrite(journal,journalPath);
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.mutationInProgress=NO;
             [self findTransaction]; [self.tableView reloadData];
             NSTimeInterval elapsed=NSDate.timeIntervalSinceReferenceDate-started;
             [self alert:err?@"Áp dụng patch chưa hoàn tất":@"Áp dụng patch thành công"
@@ -642,13 +645,15 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
     });
 }
 - (void)confirmRestore {
-    if (!self.lastTransaction) return;
+    if (!self.lastTransaction || self.mutationInProgress) return;
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Khôi phục patch?" message:@"Chỉ khôi phục khi tệp đích vẫn khớp với dữ liệu patch đã áp dụng. Nếu tệp đã thay đổi, hệ thống sẽ từ chối ghi đè." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Khôi phục" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused unused){ [self restore]; }]];
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)restore {
+    if (self.mutationInProgress || !self.lastTransaction) return;
+    self.mutationInProgress=YES;
     NSString *dir=[self.lastTransaction copy];
     dispatch_async(wq_io(), ^{
         NSTimeInterval started=NSDate.timeIntervalSinceReferenceDate;
@@ -700,6 +705,7 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             WQPWrite(journal,journalPath);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.mutationInProgress=NO;
             [self findTransaction]; [self.tableView reloadData];
             NSTimeInterval elapsed=NSDate.timeIntervalSinceReferenceDate-started;
             [self alert:err?@"Khôi phục chưa hoàn tất":@"Khôi phục thành công"
