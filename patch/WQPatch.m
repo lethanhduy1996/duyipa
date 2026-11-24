@@ -103,6 +103,14 @@ static NSDictionary<NSString *,NSString *> *WQPDescribeAppFile(NSString *filePat
     return @{@"bundleID":bundle,@"relativePath":relative,@"absolutePath":path};
 }
 
+static NSString *WQPItemType(mode_t mode) {
+    if (S_ISLNK(mode)) return @"liên kết tượng trưng";
+    if (S_ISDIR(mode)) return @"thư mục";
+    if (S_ISSOCK(mode)) return @"socket";
+    if (S_ISFIFO(mode)) return @"ống dữ liệu";
+    if (S_ISCHR(mode) || S_ISBLK(mode)) return @"tệp thiết bị";
+    return @"mục không phải tệp thông thường";
+}
 static BOOL WQPSafeParents(NSString *root, NSString *target) {
     NSString *parent=target.stringByDeletingLastPathComponent;
     while (![parent isEqualToString:root]) {
@@ -760,7 +768,12 @@ static NSString *WQPVietnameseCodecError(NSString *reason) {
             [seen addObject:target];
             struct stat st;
             BOOL existed=wq_stat(target,&st);
-            if (existed && !S_ISREG(st.st_mode)) { err=@"Đường dẫn đích không phải tệp thông thường."; break; }
+            if (existed && !S_ISREG(st.st_mode)) {
+                err=[NSString stringWithFormat:
+                    @"Không thể áp dụng tệp %lu/%lu. Đích '%@' hiện là %@, không phải tệp thông thường. Hãy kiểm tra đúng phiên bản ứng dụng và loại tệp trước khi thử lại.",
+                    (unsigned long)(preflight.count+1),(unsigned long)rules.count,relative,WQPItemType(st.st_mode)];
+                break;
+            }
             NSData *replacement=[[NSData alloc] initWithBase64EncodedString:item[@"data"] options:0];
             if (!replacement || replacement.length>8*1024*1024) { err=@"Dữ liệu thay thế không hợp lệ hoặc vượt quá 8 MB."; break; }
             NSData *original=nil;
