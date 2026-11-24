@@ -80,14 +80,16 @@ s = sub_once(s,
     '        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {',
     '        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {') if False else s
 # Both settings UIs contain exactly one update-enabled toggle; lock them off.
-prism_anchor = '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {'
-assert s.count(prism_anchor) == 1, 'Prism Settings anchor changed'
-s=s.replace(prism_anchor,
-    '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        if (indexPath.row == 4) toggle.enabled = NO;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 2) {')
-classic_anchor='        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 0) {'
-assert s.count(classic_anchor) == 1, 'Classic Settings anchor changed'
-s=s.replace(classic_anchor,
-    '        cell.contentConfiguration = c;\n        cell.accessoryView = toggle;\n        if (row == 5) toggle.enabled = NO;\n        cell.selectionStyle = UITableViewCellSelectionStyleNone;\n        return cell;\n    }\n    if (indexPath.section == 0) {')
+# Lock the Check for Updates switch off without changing other Settings rows.
+# Match the unique toggle expressions so this survives structural UI changes.
+s = sub_once(s,
+    '        toggle.on = indexPath.row == 1 ? wq_show_item_counts()',
+    '        toggle.enabled = indexPath.row != 4;\n'
+    '        toggle.on = indexPath.row == 1 ? wq_show_item_counts()')
+s = sub_once(s,
+    '        toggle.on = row == 1 ? wq_show_item_counts() : row == 2 ? wq_keep_before_restore()',
+    '        toggle.enabled = row != 5;\n'
+    '        toggle.on = row == 1 ? wq_show_item_counts() : row == 2 ? wq_keep_before_restore()')
 old = 'Check for Updates: twice a day WQ Files reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.'
 assert s.count(old) == 2, 'update help text changed'
 s=s.replace(old,'Check for Updates: automatically checking for updates is disabled in this Patch build; no update notifications appear.')
