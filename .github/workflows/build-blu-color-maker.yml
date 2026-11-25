@@ -1,0 +1,66 @@
+name: Build Blu Color Maker IPA
+
+on:
+  push:
+    branches:
+      - blu-color-maker
+    paths:
+      - 'BluColorMaker/**'
+      - '.github/workflows/build-blu-color-maker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Prepare Xcode project
+        working-directory: BluColorMaker
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
+      - name: Build iOS application
+        working-directory: BluColorMaker
+        run: |
+          set -euo pipefail
+          xcodebuild -project BluColorMaker.xcodeproj \
+            -scheme BluColorMaker \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/BluBuild" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package and validate unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/BluBuild/Build/Products/Release-iphoneos/BluColorMaker.app"
+          test -d "$APP"
+          test -f "$APP/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          test -f "$APP/$EXE"
+          file "$APP/$EXE"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" "$GITHUB_WORKSPACE/dist"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -q -r "$GITHUB_WORKSPACE/dist/BluColorMaker-unsigned.ipa" Payload
+          /usr/bin/unzip -t "$GITHUB_WORKSPACE/dist/BluColorMaker-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/dist/BluColorMaker-unsigned.ipa" > "$GITHUB_WORKSPACE/dist/SHA256SUMS.txt"
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BluColorMaker-IPA
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
