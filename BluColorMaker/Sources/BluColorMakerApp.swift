@@ -182,6 +182,9 @@ struct ContentView: View {
     @State private var export = false
     @State private var document = PresetDocument()
     @State private var message: String?
+    @State private var importing = false
+    @State private var sourceName: String? = nil
+    @State private var shaderExport: ShaderExportItem?
     private static let storageKey = "blu.presets.v1"
     private static func loadPresets() -> [Preset] {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
@@ -206,10 +209,12 @@ struct ContentView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    fileControls
                     NeonPreview(preset: current)
                     controls
+                    shaderActions
                     presets
-                    Text("Ứng dụng thiết kế hiệu ứng màu độc lập. Tệp xuất là cấu hình JSON, không phải patch game hoặc .3105.")
+                    Text("Hỗ trợ shader mẫu Blu và cấu hình JSON cho dự án Unity riêng. Không đọc AssetBundle nhị phân hoặc .3105.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding(16)
             }
@@ -228,9 +233,71 @@ struct ContentView: View {
             case .failure(let error): message = error.localizedDescription
             }
         }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
+                let bytes = try Data(contentsOf: url)
+                guard bytes.count <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
+                let loaded = try BluShaderIO.read(bytes, ext: url.pathExtension.lowercased())
+                current = loaded
+                sourceName = url.lastPathComponent
+            } catch { message = error.localizedDescription }
+        }
+        .sheet(item: $shaderExport) { item in
+            ShaderExportPicker(url: item.url) { success in
+                shaderExport = nil
+                if success { message = "Đã xuất mã nguồn .shader" }
+            }
+        }
         .alert("Blu Color Maker", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK") { message = nil }
         } message: { Text(message ?? "") }
+    }
+    private var fileControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Tệp nguồn", systemImage: "folder").font(.headline)
+            Text(sourceName ?? "Chưa nhập tệp")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .lineLimit(2)
+            HStack {
+                Button { importing = true } label: {
+                    Label("Nhập tệp", systemImage: "folder.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent)
+                Button {
+                    sourceName = "BluNeon.shader (mẫu)"
+                } label: {
+                    Text("Dùng mẫu").frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered)
+            }
+            Text("Nhận .shader do app xuất hoặc preset JSON.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(16)
+         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+    }
+    private var shaderActions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                do {
+                    let data = try BluShaderIO.render(current)
+                    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let url = dir.appendingPathComponent("BluNeon.shader")
+                    try data.write(to: url, options: .atomic)
+                    shaderExport = ShaderExportItem(url: url)
+                } catch { message = error.localizedDescription }
+            } label: {
+                Label("Áp dụng & xuất shader", systemImage: "square.and.arrow.up")
+                    .font(.headline).frame(maxWidth: .infinity)
+            }.buttonStyle(.borderedProminent)
+            Text("Xuất mã nguồn mới cho Unity; giữ nguyên tệp đã nhập.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(16)
+         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
     }
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -297,5 +364,146 @@ struct ContentView: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+
+// Independent Unity shader template and round-trip preset format.
+enum ShaderIOError: LocalizedError {
+    case tooLarge, unsupported, invalid
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge: return "Tệp vượt quá 1 MB."
+        case .unsupported: return "Chỉ hỗ trợ preset JSON và shader mẫu Blu do ứng dụng xuất. Không hỗ trợ gói shader nhị phân."
+        case .invalid: return "Tệp không hợp lệ hoặc cấu hình màu không đúng định dạng."
+        }
+    }
+}
+
+enum BluShaderIO {
+    static let marker = "// BluColorMakerPresetV2:"
+    static func sanitize(_ p: Preset) throws -> Preset {
+        let values = [p.first.r, p.first.g, p.first.b, p.second.r, p.second.g, p.second.b, p.duration, p.intensity]
+        guard values.allSatisfy({ $0.isFinite }),
+              values.prefix(6).allSatisfy({ (0.0...1.0).contains($0) }),
+              (0.5...10.0).contains(p.duration),
+              (0.0...1.0).contains(p.intensity) else { throw ShaderIOError.invalid }
+        var clean = p
+        clean.name = String(p.name.prefix(80))
+        return clean
+    }
+    static func read(_ data: Data, ext: String) throws -> Preset {
+        if ext == "json" {
+            return try sanitize(JSONDecoder().decode(Preset.self, from: data))
+        }
+        guard ext == "shader", let source = String(data: data, encoding: .utf8),
+              let line = source.split(whereSeparator: \.isNewline).first,
+              line.hasPrefix(marker),
+              let presetData = Data(base64Encoded: String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)) else {
+            throw ShaderIOError.unsupported
+        }
+        // Never carry imported shader code into the exported program.
+        return try sanitize(JSONDecoder().decode(Preset.self, from: presetData))
+    }
+    static func render(_ input: Preset) throws -> Data {
+        let p = try sanitize(input)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let meta = try encoder.encode(p).base64EncodedString()
+        let mode = Effect.allCases.firstIndex(of: p.effect) ?? 0
+        func number(_ n: Double) -> String {
+            String(format: "%.5f", locale: Locale(identifier: "en_US_POSIX"), n)
+        }
+        func color(_ c: RGB) -> String { "(\(number(c.r)),\(number(c.g)),\(number(c.b)),1)" }
+        let source = """
+        \(marker)\(meta)
+        Shader "BluColorMaker/Neon"
+        {
+            Properties
+            {
+                _ColorA ("Main Color", Color) = \(color(p.first))
+                _ColorB ("Secondary Color", Color) = \(color(p.second))
+                _Cycle ("Cycle Seconds", Float) = \(number(p.duration))
+                _Glow ("Glow", Range(0,6)) = \(number(p.intensity * 6))
+                _Effect ("Effect Mode", Float) = \(mode)
+            }
+            SubShader
+            {
+                Tags { "Queue"="Geometry" "RenderType"="Opaque" }
+                Pass
+                {
+                    ZTest LEqual
+                    ZWrite On
+                    Cull Back
+                    CGPROGRAM
+                    #pragma vertex vert
+                    #pragma fragment frag
+                    #include "UnityCG.cginc"
+                    float4 _ColorA, _ColorB;
+                    float _Cycle, _Glow, _Effect;
+                    struct appdata { float4 vertex : POSITION; float2 uv : TEXCOORD0; };
+                    struct v2f { float4 vertex : SV_POSITION; float2 uv : TEXCOORD0; };
+                    v2f vert(appdata v)
+                    {
+                        v2f o;
+                        o.vertex = UnityObjectToClipPos(v.vertex);
+                        o.uv = v.uv;
+                        return o;
+                    }
+                    float3 hsv(float h)
+                    {
+                        return saturate(abs(frac(h + float3(0, 0.666667, 0.333333)) * 6 - 3) - 1);
+                    }
+                    float4 frag(v2f i) : SV_Target
+                    {
+                        float phase = frac(_Time.y / max(0.5, _Cycle));
+                        float wave = 0.5 - 0.5 * cos(phase * 6.2831853);
+                        float3 col = _ColorA.rgb;
+                        float strength = 1.0;
+                        if (_Effect > 3.5) {
+                            col = hsv(phase + i.uv.y * 0.3);
+                        } else if (_Effect > 2.5) {
+                            strength = 0.35 + 0.65 * wave;
+                        } else if (_Effect > 1.5) {
+                            float scan = 0.5 + 0.5 * cos((i.uv.y - phase) * 6.2831853);
+                            col = lerp(_ColorA.rgb, _ColorB.rgb, scan);
+                            col = lerp(col, float3(1,1,1), pow(scan, 18) * 0.85);
+                        } else if (_Effect > 0.5) {
+                            col = lerp(_ColorA.rgb, _ColorB.rgb, wave);
+                        }
+                        return float4(col * strength * (1 + _Glow), 1);
+                    }
+                    ENDCG
+                }
+            }
+            FallBack Off
+        }
+        """
+        return Data(source.utf8)
+    }
+}
+
+struct ShaderExportItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+struct ShaderExportPicker: UIViewControllerRepresentable {
+    let url: URL
+    let finished: (Bool) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(finished) }
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let controller = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        controller.delegate = context.coordinator
+        return controller
+    }
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let finished: (Bool) -> Void
+        init(_ finished: @escaping (Bool) -> Void) { self.finished = finished }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            finished(!urls.isEmpty)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finished(false) }
     }
 }
