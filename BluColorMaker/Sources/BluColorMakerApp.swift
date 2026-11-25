@@ -210,7 +210,9 @@ struct ContentView: View {
     @State private var export = false
     @State private var document = PresetDocument()
     @State private var message: String?
-    @State private var importing = false
+    @State private var sourcePicker: SourcePickerMode?
+    @State private var sourceFolder: URL?
+    @State private var folderFiles: [URL] = []
     @State private var importError: String? = nil
     @State private var sourceName: String? = nil
     @State private var sourceInfo: String? = nil
@@ -264,37 +266,12 @@ struct ContentView: View {
             case .failure(let error): message = error.localizedDescription
             }
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
-            do {
-                guard let url = try result.get().first else { return }
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                importError = nil
-                let limit = 32 * 1024 * 1024
-                let info = try url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
-                guard info.isDirectory != true else { throw ShaderIOError.invalid }
-                if let size = info.fileSize, size > limit { throw ShaderIOError.tooLarge }
-                let file = try FileHandle(forReadingFrom: url)
-                defer { try? file.close() }
-                var bytes = Data()
-                while bytes.count <= limit {
-                    guard let chunk = try file.read(upToCount: min(256 * 1024, limit + 1 - bytes.count)), !chunk.isEmpty else { break }
-                    bytes.append(chunk)
-                }
-                guard bytes.count <= limit else { throw ShaderIOError.tooLarge }
-                if let header = try BluReferenceHeader.inspect(bytes) {
-                    sourceInfo = header
-                    binaryReference = true
-                    sourceName = url.lastPathComponent
-                } else {
-                    let loaded = try BluShaderIO.readReference(bytes, ext: url.pathExtension.lowercased(), fallback: current)
-                    current = loaded.preset
-                    sourceName = url.lastPathComponent
-                    sourceInfo = loaded.detail
-                    binaryReference = false
-                }
-            } catch {
-                importError = error.localizedDescription
+        .sheet(item: $sourcePicker) { mode in
+            NativeSourcePicker(mode: mode) { url in
+                sourcePicker = nil
+                guard let url = url else { return }
+                if mode == .folder { openReferenceFolder(url) }
+                else { readSource(url) }
             }
         }
         .sheet(item: $shaderExport) { item in
@@ -307,6 +284,55 @@ struct ContentView: View {
             Button("OK") { message = nil }
         } message: { Text(message ?? "") }
     }
+    private func openReferenceFolder(_ url: URL) {
+        importError = nil
+        folderFiles = []
+        sourceFolder = nil
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+            folderFiles = children.filter {
+                (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            sourceFolder = url
+            if folderFiles.isEmpty { importError = "Không tìm thấy tệp trong thư mục đã chọn." }
+        } catch { importError = error.localizedDescription }
+    }
+    private func readSource(_ url: URL, parent: URL? = nil) {
+        importError = nil
+        sourceName = nil
+        sourceInfo = nil
+        binaryReference = false
+        let accessURL = parent ?? url
+        let scoped = accessURL.startAccessingSecurityScopedResource()
+        defer { if scoped { accessURL.stopAccessingSecurityScopedResource() } }
+        do {
+            let limit = 32 * 1024 * 1024
+            let info = try url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
+            guard info.isDirectory != true else { throw ShaderIOError.invalid }
+            if let size = info.fileSize, size > limit { throw ShaderIOError.tooLarge }
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            var bytes = Data()
+            while bytes.count <= limit {
+                guard let chunk = try file.read(upToCount: min(256 * 1024, limit + 1 - bytes.count)), !chunk.isEmpty else { break }
+                bytes.append(chunk)
+            }
+            guard bytes.count <= limit else { throw ShaderIOError.tooLarge }
+            sourceName = url.lastPathComponent
+            if let header = try BluReferenceHeader.inspect(bytes) {
+                sourceInfo = header
+                binaryReference = true
+            } else {
+                let loaded = try BluShaderIO.readReference(bytes, ext: url.pathExtension.lowercased(), fallback: current)
+                current = loaded.preset
+                sourceInfo = loaded.detail
+            }
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
     private var fileControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Tệp nguồn", systemImage: "folder").font(.headline)
@@ -314,7 +340,7 @@ struct ContentView: View {
                 .font(.subheadline).foregroundStyle(.secondary)
                 .lineLimit(2)
             HStack {
-                Button { importError = nil; importing = true } label: {
+                Button { importError = nil; sourcePicker = .file } label: {
                     Label("Nhập tệp", systemImage: "folder.badge.plus")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent)
@@ -326,6 +352,33 @@ struct ContentView: View {
                 } label: {
                     Text("Dùng mẫu").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered)
+            }
+            Button {
+                importError = nil
+                sourcePicker = .folder
+            } label: {
+                Label("Chọn thư mục nếu tệp không chọn được", systemImage: "folder")
+                    .frame(maxWidth: .infinity)
+            }.buttonStyle(.bordered)
+            if let folder = sourceFolder {
+                DisclosureGroup("Tệp trong \(folder.lastPathComponent) (\(folderFiles.count))") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(folderFiles, id: \.self) { url in
+                                Button {
+                                    readSource(url, parent: folder)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "doc")
+                                        Text(url.lastPathComponent).font(.caption).multilineTextAlignment(.leading)
+                                        Spacer()
+                                        if sourceName == url.lastPathComponent { Image(systemName: "checkmark") }
+                                    }.padding(.vertical, 6)
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }.frame(maxHeight: 220)
+                }.font(.subheadline)
             }
             if let error = importError {
                 Label(error, systemImage: "exclamationmark.circle")
@@ -645,5 +698,37 @@ enum BluReferenceHeader {
             throw ShaderIOError.invalid
         }
         return "UnityFS v\(version) · Unity \(engine) · \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))"
+    }
+}
+
+
+enum SourcePickerMode: String, Identifiable {
+    case file, folder
+    var id: String { rawValue }
+}
+
+struct NativeSourcePicker: UIViewControllerRepresentable {
+    let mode: SourcePickerMode
+    let finished: (URL?) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(finished) }
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let controller: UIDocumentPickerViewController
+        if mode == .folder {
+            controller = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        } else {
+            controller = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .data, .content], asCopy: true)
+        }
+        controller.allowsMultipleSelection = false
+        controller.delegate = context.coordinator
+        return controller
+    }
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let finished: (URL?) -> Void
+        init(_ finished: @escaping (URL?) -> Void) { self.finished = finished }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            finished(urls.first)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finished(nil) }
     }
 }
