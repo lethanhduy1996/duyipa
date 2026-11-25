@@ -204,8 +204,29 @@ struct PresetDocument: FileDocument {
     }
 }
 
+// File roles are UI labels based on the filename convention, not a verified shader role.
+private enum SourceCategory: String, CaseIterable, Identifiable {
+    case opti, shader, other
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .opti: return "Opti · Súng"
+        case .shader: return "Shader · Nhân vật"
+        case .other: return "Khác"
+        }
+    }
+    static func classify(_ filename: String) -> Self {
+        let name = filename.lowercased()
+        if name.hasPrefix("optionalavatarres_commonab_shader") { return .opti }
+        if name.hasPrefix("shaders.") || name.hasPrefix("shaders(") || name == "shaders" { return .shader }
+        return .other
+    }
+}
+
 struct ContentView: View {
     @State private var current = Preset()
+    @State private var sourceCategory: SourceCategory = .opti
+    @State private var categoryPresets: [SourceCategory: Preset] = [:]
     @State private var saved: [Preset] = Self.loadPresets()
     @State private var export = false
     @State private var document = PresetDocument()
@@ -301,7 +322,20 @@ struct ContentView: View {
             if folderFiles.isEmpty { importError = "Không tìm thấy tệp trong thư mục đã chọn." }
         } catch { importError = error.localizedDescription }
     }
+    private func switchCategory(_ category: SourceCategory) {
+        guard category != sourceCategory else { return }
+        categoryPresets[sourceCategory] = current
+        current = categoryPresets[category] ?? Preset()
+        sourceCategory = category
+        sourceName = nil
+        sourceInfo = nil
+        importError = nil
+        binaryReference = false
+        decorativeBundle = nil
+        selectedFieldID = nil
+    }
     private func readSource(_ url: URL, parent: URL? = nil) {
+        switchCategory(SourceCategory.classify(url.lastPathComponent))
         importError = nil
         sourceName = nil
         sourceInfo = nil
@@ -346,6 +380,17 @@ struct ContentView: View {
     private var fileControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Tệp nguồn", systemImage: "folder").font(.headline)
+            Picker("Loại tài nguyên", selection: Binding(
+                get: { sourceCategory },
+                set: { switchCategory($0) }
+            )) {
+                ForEach(SourceCategory.allCases) { category in
+                    Text(category.title).tag(category)
+                }
+            }.pickerStyle(.segmented)
+            Text(sourceCategory == .opti ? "Opti — optionalavatarres_commonab_shader…" :
+                 sourceCategory == .shader ? "Shader — shaders…" : "Tài nguyên Unity khác")
+                .font(.caption).foregroundStyle(.secondary)
             Text(sourceName ?? "Chưa nhập tệp")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -355,6 +400,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent)
                 Button {
+                    switchCategory(.other)
                     sourceName = "BluNeon.shader (mẫu)"
                     sourceInfo = nil
                     importError = nil
@@ -373,10 +419,14 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
             }.buttonStyle(.bordered)
             if let folder = sourceFolder {
-                DisclosureGroup("Tệp trong \(folder.lastPathComponent) (\(folderFiles.count))") {
+                let filtered = folderFiles.filter { SourceCategory.classify($0.lastPathComponent) == sourceCategory }
+                DisclosureGroup("Tệp \(sourceCategory.title) (\(filtered.count))") {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(folderFiles, id: \.self) { url in
+                            if filtered.isEmpty {
+                                Text("Không có tệp thuộc mục này. Chọn mục khác để xem.").font(.caption)
+                            }
+                            ForEach(filtered, id: \.self) { url in
                                 Button {
                                     readSource(url, parent: folder)
                                 } label: {
@@ -401,6 +451,8 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if binaryReference {
+                Text("Phân loại theo tên tệp. Chức năng đồ họa thực tế chưa được xác minh.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if let bundle = decorativeBundle, !bundle.fields.isEmpty {
                     Text("Thuộc tính màu trang trí").font(.subheadline.weight(.medium))
                     Picker("Vật liệu / màu", selection: $selectedFieldID) {
