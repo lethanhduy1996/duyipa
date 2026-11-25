@@ -27,6 +27,7 @@ jobs:
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
+          node --check WebResources/script.js
           xcodegen generate
       - name: Build iOS application
         working-directory: BluColorMaker
@@ -48,6 +49,9 @@ jobs:
           APP="$RUNNER_TEMP/BluBuild/Build/Products/Release-iphoneos/BluColorMaker.app"
           test -d "$APP"
           test -f "$APP/Info.plist"
+          for f in index.html style.css script.js; do
+            cmp "$GITHUB_WORKSPACE/BluColorMaker/WebResources/$f" "$APP/WebResources/$f"
+          done
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
           test -f "$APP/$EXE"
           file "$APP/$EXE"

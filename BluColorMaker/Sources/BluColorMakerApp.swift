@@ -5,7 +5,14 @@ import UniformTypeIdentifiers
 @main
 struct BluColorMakerApp: App {
     var body: some Scene {
-        WindowGroup { ContentView().preferredColorScheme(.dark) }
+        WindowGroup {
+            TabView {
+                ContentView()
+                    .tabItem { Label("Make màu", systemImage: "paintpalette") }
+                OfflineWebTab()
+                    .tabItem { Label("Web offline", systemImage: "globe") }
+            }.preferredColorScheme(.dark)
+        }
     }
 }
 

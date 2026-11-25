@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="vi"><head>
+    <meta charset="UTF-8">
+    <!-- This site is hosted on Netlify. Anyone can build and deploy a site
+    like this one for free: https://netlify.new/?utm_campaign=loops&utm_source=ai-legible&utm_medium=owned&utm_content=comment&utm_id=af4e2a67-02e6-45d9-b738-c883d8b5eaa6
+    Netlify hosting facts for this site: static/SSR served via Netlify Edge. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="theme-color" content="#000000">
+    <title>X-Ray + Hologram</title>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&amp;family=Unbounded:wght@500;600;700&amp;display=swap" rel="stylesheet">
+      
+    <link rel="stylesheet" href="style.css"></head>
+    <body>
+      <div class="wrap">
+        <div class="top-head">
+          <div>
+            <p class="kicker">Bundle Patcher</p>
+              <h1>X-Ray · Holo</h1>
+              </div>
+              <span class="pill">
+                <i>
+                </i>Offline</span>
+              </div>
+              <div id="drop">
+                <div id="dropText">
+                  <b>Bấm để chọn file bundle</b>
+                    <span>shaders / optionalavatarres_commonab_shader</span>
+                    </div>
+                    <input type="file" id="file" class="hide">
+                  </div>
+                  <div id="info">
+                  </div>
+                  <div class="presets" id="presets">
+                    <label class="pre">
+                      <input type="radio" name="p" value="3">
+                      <div>
+                        <div class="t">3 · Định vị súng</div>
+                          <div class="d">Đổi màu súng, màu viền súng và màu keo của <code>backweapon</code>, <code>brmobilebumpspec</code>, <code>brmobilebumpspecdecal</code>. Nhận file <b>shaders</b> gốc hoặc đã mod.</div>
+                            <div class="n">_XRayColor · _OutLineColor · _OutLineWidth · _DimColor</div>
+                            </div>
+                          </label>
+                          <label class="pre">
+                            <input type="radio" name="p" value="4">
+                            <div>
+                              <div class="t">4 · Định vị nhân vật</div>
+                                <div class="d">Thay toàn bộ shader nhân vật (da, tóc, quần áo, mũ) bằng <code>hologram</code> phát sáng. Nhận file <b>optionalavatarres_commonab_shader</b> gốc hoặc đã mod.</div>
+                                  <div class="n">_TintColor · _RimColor · _ScanColor · đường quét · nhiễu</div>
+                                  </div>
+                                </label>
+                              </div>
+                              <details class="panel adv hide" id="colBox">
+                                <summary>Tuỳ chỉnh màu súng &amp; viền</summary>
+                                  <div class="cols">
+                                    <div class="cfld">
+                                      <label>Màu súng <span class="dim">(_XRayColor)</span>
+                                      </label>
+                                      <div class="crow">
+                                        <input type="color" id="cXray" value="#111111">
+                                        <input type="text" id="tXray" value="#111111" spellcheck="false">
+                                      </div>
+                                    </div>
+                                    <div class="cfld">
+                                      <label>Màu viền súng <span class="dim">(_OutLineColor)</span>
+                                      </label>
+                                      <div class="crow">
+                                        <input type="color" id="cLine" value="#ffffff">
+                                        <input type="text" id="tLine" value="#FFFFFF" spellcheck="false">
+                                      </div>
+                                    </div>
+                                    <div class="cfld">
+                                      <label>Màu Keo <span class="dim">(_DimColor)</span>
+                                      </label>
+                                      <div class="crow">
+                                        <input type="color" id="cDim" value="#111111">
+                                        <input type="text" id="tDim" value="#111111" spellcheck="false">
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div class="wfld">
+                                    <label>Độ dày viền <span class="dim">(_OutLineWidth)</span> — <b id="wVal">4.0</b>
+                                    </label>
+                                    <input type="range" id="rWidth" min="0" max="20" step="0.5" value="4">
+                                  </div>
+                                  <div class="afld">
+                                    <label>Độ đục màu súng <span class="dim">(alpha)</span> — <b id="aVal">1.00</b>
+                                    </label>
+                                    <input type="range" id="rAlpha" min="0" max="1" step="0.05" value="1">
+                                  </div>
+                                  <div class="note">Màu ghi vào shader dưới dạng 4 số thực RGBA (16 byte tại chỗ) — kích thước file không đổi. Đây là <code>m_DefValue</code>, giá trị mặc định của shader.</div>
+                                  </details>
+                                  <details class="panel adv hide" id="holoBox">
+                                    <summary>Tuỳ chỉnh Hologram</summary>
+                                      <div class="cols">
+                                        <div class="cfld">
+                                          <label>Màu nhân vật <span class="dim">(_TintColor)</span>
+                                          </label>
+                                          <div class="crow">
+                                            <input type="color" id="cTint" value="#00ffff">
+                                            <input type="text" id="tTint" value="#00FFFF" spellcheck="false">
+                                          </div>
+                                        </div>
+                                        <div class="cfld">
+                                          <label>Màu sáng mép <span class="dim">(_RimColor)</span>
+                                          </label>
+                                          <div class="crow">
+                                            <input type="color" id="cRim" value="#00ffff">
+                                            <input type="text" id="tRim" value="#00FFFF" spellcheck="false">
+                                          </div>
+                                        </div>
+                                        <div class="cfld">
+                                          <label>Màu quét <span class="dim">(_ScanColor)</span>
+                                          </label>
+                                          <div class="crow">
+                                            <input type="color" id="cScan" value="#000000">
+                                            <input type="text" id="tScan" value="#000000" spellcheck="false">
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div class="afld">
+                                        <label>Độ đục nhân vật <span class="dim">(_TintColor alpha)</span> — <b id="tintAVal">1.00</b>
+                                        </label>
+                                        <input type="range" id="rTintA" min="0" max="1" step="0.05" value="1">
+                                      </div>
+                                      <div class="afld">
+                                        <label>Độ mạnh sáng mép <span class="dim">(_RimColor alpha)</span> — <b id="rimAVal">1.00</b>
+                                        </label>
+                                        <input type="range" id="rRimA" min="0" max="1" step="0.05" value="1">
+                                      </div>
+                                      <div class="afld">
+                                        <label>Độ mạnh quét <span class="dim">(_ScanColor alpha)</span> — <b id="scanAVal">1.00</b>
+                                        </label>
+                                        <input type="range" id="rScanA" min="0" max="1" step="0.05" value="1">
+                                      </div>
+                                      <div class="fxrow">
+                                        <label class="chk">
+                                          <input type="checkbox" id="kXray" checked="">
+                                          <span>
+                                            <b>Xuyên tường</b>
+                                              <span class="dim">(zTest = Always)</span>
+                                              </span>
+                                            </label>
+                                            <label class="chk">
+                                              <input type="checkbox" id="kLine">
+                                              <span>Đường quét ngang <span class="dim">(_Line)</span>
+                                              </span>
+                                            </label>
+                                            <label class="chk">
+                                              <input type="checkbox" id="kGlitch">
+                                              <span>Nhiễu / giật <span class="dim">(_LineAndGlitch)</span>
+                                              </span>
+                                            </label>
+                                          </div>
+                                          <div class="note">
+                                            <b>Xuyên tường</b> đặt <code>zTest = 8 (Always)</code> trong render state — đây mới là thứ làm nhân vật hiện qua vật cản, màu sắc chỉ quyết định trông ra sao. Bỏ tick trả về <code>4 (LEqual)</code>, nhân vật bị tường che như bình thường.<br>Hai hiệu ứng còn lại: bỏ tick cả hai = đúng công thức bản mod đang chạy (thân đặc, dễ nhìn địch). Tick vào bật hiệu ứng hologram gốc — có đường kẻ cắt ngang người. Muốn thấy dải quét thì đặt <b>màu quét</b> khác đen.</div>
+                                              <div class="note">
+                                                <b>Khác với định vị súng:</b>
+                                                  <code>hologram</code> chỉ có 1 pass và không có tham số bề dày. <code>_RimColor</code> là <i>fresnel rim</i> — sáng dần ở mép cơ thể theo góc nhìn, không phải đường viền nét như <code>_OutLineWidth</code> của preset 3 (shader đó có pass riêng phóng to mô hình để vẽ viền). Muốn thấy rõ sáng mép thì hạ <b>độ đục nhân vật</b> xuống, nếu không màu nền sẽ lấn át.</div>
+                                                  </details>
+                                                  <div class="row" style="margin-bottom:14px">
+                                                    <button id="go" class="btn-primary" disabled="">Tạo file</button>
+                                                    </div>
+                                                    <div id="out">
+                                                    </div>
+                                                    <div class="guide">
+                                                      <div class="guide-title">Hướng dẫn sử dụng</div>
+                                                        <ul class="steps">
+                                                          <li>
+                                                            <div class="step-n">1</div>
+                                                              <div>
+                                                                <b>Lấy file bundle từ game</b>
+                                                                  <span>Dùng app quản lý file (Filza, Esplorer…) vào thư mục cài đặt Free Fire → <code>assets/bin/Data/</code>. File cần tìm: <code>shaders.*</code> (X-Ray súng) hoặc <code>optionalavatarres_commonab_shader.*</code> (Hologram nhân vật).</span>
+                                                                  </div>
+                                                                </li>
+                                                                <li>
+                                                                  <div class="step-n">2</div>
+                                                                    <div>
+                                                                      <b>Bấm vào ô chọn file bên trên</b>
+                                                                        <span>Chọn file bundle từ Files app. Tool chỉ hiển thị X-Ray và Hologram, tự nhận diện loại file phù hợp.</span>
+                                                                        </div>
+                                                                      </li>
+                                                                      <li>
+                                                                        <div class="step-n">3</div>
+                                                                          <div>
+                                                                            <b>Chọn X-Ray hoặc Hologram rồi bấm "Tạo file"</b>
+                                                                              <span>Chỉnh màu sắc (preset 3–4) hoặc giữ mặc định. Xử lý chạy hoàn toàn ngoại tuyến, dung lượng file đầu ra giữ nguyên 100%.</span>
+                                                                              </div>
+                                                                            </li>
+                                                                            <li>
+                                                                              <div class="step-n">4</div>
+                                                                                <div>
+                                                                                  <b>Bấm "Tải file đã sửa" → lưu vào Files</b>
+                                                                                    <span>Chép đè file đã sửa lên file gốc trong game (cùng tên, cùng vị trí). Xong là vào game thấy hiệu ứng.</span>
+                                                                                    </div>
+                                                                                  </li>
+                                                                                </ul>
+                                                                                <div class="presets-guide">
+                                                                                  <div class="pg-item">
+                                                                                    <div class="pg-num">X-RAY</div>
+                                                                                      <div class="pg-name">Định vị súng</div>
+                                                                                        <div class="pg-desc">X-Ray súng hiện qua tường, đổi màu tuỳ ý (file shaders)</div>
+                                                                                        </div>
+                                                                                        <div class="pg-item">
+                                                                                          <div class="pg-num">HOLOGRAM</div>
+                                                                                            <div class="pg-name">Định vị nhân vật</div>
+                                                                                              <div class="pg-desc">Hologram xuyên tường toàn thân, chỉnh màu + hiệu ứng</div>
+                                                                                              </div>
+                                                                                            </div>
+                                                                                          </div>
+                                                                                        </div>
+                                                                                        
+                                                                                                                
+                                                                                                              
+                                                                                                              <script async="" src="/.netlify/scripts/hud?variant=public" data-nf-variant="public" data-netlify-site-id="af4e2a67-02e6-45d9-b738-c883d8b5eaa6" data-app-host="app.netlify.com" data-account-tier="free">
+                                                                                                              </script><script src="script.js" defer=""></script></body></html>
