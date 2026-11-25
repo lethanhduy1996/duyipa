@@ -28,6 +28,8 @@ jobs:
             brew install xcodegen
           fi
           node --check WebResources/script.js
+          swiftc -O Sources/DecorativeBundle.swift Sources/LZ4BlockEncoder.swift Tests/main.swift -o "$RUNNER_TEMP/test-lz4"
+          "$RUNNER_TEMP/test-lz4"
           xcodegen generate
       - name: Build iOS application
         working-directory: BluColorMaker

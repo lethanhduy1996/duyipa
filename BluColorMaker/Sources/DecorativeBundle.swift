@@ -3,13 +3,15 @@ import Foundation
 // Edits only stored RGB values of a selected decorative Material property.
 // No shader programs, alpha, render state, keywords, or game paths are changed.
 enum BundleColorError: LocalizedError {
-    case invalid, unsupported, tooLarge, noColors
+    case invalid, unsupported, tooLarge, noColors, sizeIncrease, unchanged
     var errorDescription: String? {
         switch self {
         case .invalid: return "Cấu trúc UnityFS không hợp lệ."
         case .unsupported: return "Phiên bản hoặc cấu trúc UnityFS chưa được hỗ trợ."
         case .tooLarge: return "Tài nguyên giải nén vượt quá giới hạn."
         case .noColors: return "Không tìm thấy thuộc tính màu material trang trí phù hợp."
+        case .sizeIncrease: return "Không thể nén bản đã sửa về dung lượng không lớn hơn tệp gốc. Chưa xuất tệp."
+        case .unchanged: return "Màu mới trùng màu gốc. Hãy chọn màu khác."
         }
     }
 }
@@ -63,7 +65,7 @@ private func big(_ x: UInt64, _ n: Int) -> [UInt8] {
     (0..<n).reversed().map { UInt8(truncatingIfNeeded: x >> ($0*8)) }
 }
 
-private func decodeBlock(_ input: [UInt8], expected: Int, kind: Int) throws -> [UInt8] {
+func decodeBlock(_ input: [UInt8], expected: Int, kind: Int) throws -> [UInt8] {
     guard expected >= 0 && expected <= 64 * 1024 * 1024 else { throw BundleColorError.tooLarge }
     if kind == 0 {
         guard input.count == expected else { throw BundleColorError.invalid }
@@ -126,6 +128,7 @@ struct DecorativeBundle {
     private let directoryTail: [UInt8]
     private let blocks: [Block]
     private let payload: [UInt8]
+    private let originalSize: Int
     let fields: [BundleColorField]
 
     init(_ data: Data) throws {
@@ -191,6 +194,7 @@ struct DecorativeBundle {
         self.directoryTail = tail
         self.blocks = blocks
         self.payload = payload
+        self.originalSize = data.count
         self.fields = fields
     }
 
@@ -287,27 +291,51 @@ struct DecorativeBundle {
             let bits = Float(v).bitPattern
             for j in 0..<4 { edited[fieldID+i*4+j] = UInt8(truncatingIfNeeded: bits >> (j*8)) }
         }
+        guard edited != payload else { throw BundleColorError.unchanged }
         var directory = [UInt8](repeating: 0, count: 16)
         directory += big(UInt64(blocks.count), 4)
         var stored: [[UInt8]] = []
         for b in blocks {
             let end = b.start + b.size
             let changed = b.start < fieldID+12 && end > fieldID
-            // Unchanged compressed blocks are copied verbatim. Changed blocks use
-            // UnityFS's supported uncompressed block representation.
-            let bytes = changed ? Array(edited[b.start..<end]) : b.stored
-            let f = changed ? b.flags & ~UInt64(63) : b.flags
+            // Preserve original data blocks byte-for-byte if their payload is unchanged.
+            // Recompress modified blocks with the standard raw LZ4 block encoding.
+            var bytes = b.stored
+            var f = b.flags
+            if changed {
+                let raw = Array(edited[b.start..<end])
+                if b.flags & 63 != 0 {
+                    let compressed = encodeLZ4Block(raw)
+                    if compressed.count < raw.count {
+                        bytes = compressed
+                        f = (b.flags & ~UInt64(63)) | 2
+                    } else {
+                        bytes = raw
+                        f = b.flags & ~UInt64(63)
+                    }
+                } else { bytes = raw }
+            }
             directory += big(UInt64(b.size), 4) + big(UInt64(bytes.count), 4) + big(f, 2)
             stored.append(bytes)
         }
         directory += directoryTail
+        var directoryBytes = directory
+        var outputFlags = flags & ~UInt64(63)
+        if flags & 63 != 0 {
+            let compressed = encodeLZ4Block(directory)
+            if compressed.count < directory.count {
+                directoryBytes = compressed
+                outputFlags |= 2
+            }
+        }
         var output = prefix
-        output += big(0, 8) + big(UInt64(directory.count), 4) + big(UInt64(directory.count), 4) + big(flags & ~UInt64(63), 4)
+        output += big(0, 8) + big(UInt64(directoryBytes.count), 4) + big(UInt64(directory.count), 4) + big(outputFlags, 4)
         while output.count % 16 != 0 { output.append(0) }
-        output += directory
+        output += directoryBytes
         if flags & 0x200 != 0 { while output.count % 16 != 0 { output.append(0) } }
         for b in stored { output += b }
         output.replaceSubrange(prefix.count..<(prefix.count+8), with: big(UInt64(output.count), 8))
+        guard output.count <= originalSize else { throw BundleColorError.sizeIncrease }
         let result = Data(output)
         let verified = try DecorativeBundle(result)
         guard verified.payload == edited, verified.fields.contains(where: { $0.id == fieldID }) else { throw BundleColorError.invalid }
