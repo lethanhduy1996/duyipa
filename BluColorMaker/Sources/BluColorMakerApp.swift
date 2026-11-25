@@ -31,7 +31,15 @@ struct RGB: Codable, Equatable {
         RGB(0.6,0.1,1), .pink, RGB(1,1,1)
     ]
     var hex: String {
-        String(format: "#%02X%02X%02X", Int(r*255), Int(g*255), Int(b*255))
+        func byte(_ v: Double) -> Int { v.isFinite ? Int((min(1, max(0, v)) * 255).rounded()) : 0 }
+        return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
+    }
+    static func fromHex(_ raw: String) -> RGB? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard code.count == 6, code.allSatisfy({ "0123456789abcdefABCDEF".contains($0) }),
+              let value = UInt32(code, radix: 16) else { return nil }
+        return RGB(Double((value >> 16) & 255) / 255, Double((value >> 8) & 255) / 255, Double(value & 255) / 255)
     }
 }
 
@@ -53,6 +61,9 @@ struct Preset: Codable, Identifiable {
     var duration: Double = 3
     var intensity: Double = 0.7
     var scanNoise: Double? = 0.15
+    var rim: RGB? = .cyan
+    var rimStrength: Double? = 0.6
+    var scanStrength: Double? = 1
     static var initial: [Preset] {
         [
             Preset(name: "Tím hồng", first: RGB(0.6,0.1,1), second: .pink, effect: .blend),
@@ -109,7 +120,7 @@ struct NeonPreview: View {
                     let n = 0.62 * sin((u * 7 + v * 3 + phase) * 2 * .pi)
                         + 0.38 * sin((u * 13 - v * 9 - phase * 2) * 2 * .pi)
                     let warped = v + noise * 0.25 * n
-                    let scan = 0.5 + 0.5 * cos((warped - phase) * 2 * .pi)
+                    let scan = (0.5 + 0.5 * cos((warped - phase) * 2 * .pi)) * (preset.scanStrength ?? 1)
                     let c: Color
                     if preset.effect == .rainbow {
                         let rawHue = phase + warped * 0.3
@@ -156,7 +167,7 @@ struct NeonPreview: View {
                 if showScan {
                     scanCanvas(phase: phase).mask(PreviewCharacter().fill(.white))
                 }
-                PreviewCharacter().stroke(Color.white.opacity(0.25 + preset.intensity * 0.5), lineWidth: 1.3)
+                PreviewCharacter().stroke((preset.rim ?? .cyan).color.opacity(preset.rimStrength ?? 0.6), lineWidth: 1.3)
             }
             .opacity(alpha)
             .shadow(color: main.opacity(preset.intensity), radius: glow, x: 0, y: 0)
@@ -168,12 +179,22 @@ struct NeonPreview: View {
 struct PalettePicker: View {
     let title: String
     @Binding var rgb: RGB
+    @State private var hexInput = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(rgb.hex).font(.caption.monospaced()).foregroundStyle(.secondary)
+                TextField("#RRGGBB", text: $hexInput)
+                    .font(.caption.monospaced())
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 104)
+                    .onSubmit { if let parsed = RGB.fromHex(hexInput) { rgb = parsed } }
+                Button("Đặt") {
+                    if let parsed = RGB.fromHex(hexInput) { rgb = parsed; hexInput = parsed.hex }
+                }.font(.caption).disabled(RGB.fromHex(hexInput) == nil)
                 ColorPicker("", selection: Binding(get: { rgb.color }, set: { rgb = RGB($0) }), supportsOpacity: false)
                     .labelsHidden()
             }
@@ -187,7 +208,8 @@ struct PalettePicker: View {
                     }.buttonStyle(.plain).accessibilityLabel(item.hex)
                 }
             }
-        }
+        }.onAppear { hexInput = rgb.hex }
+         .onChange(of: rgb) { value in hexInput = value.hex }
     }
 }
 
@@ -508,7 +530,27 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Thiết kế màu").font(.title3.bold())
             PalettePicker(title: "Màu chính", rgb: $current.first)
-            PalettePicker(title: "Màu phụ", rgb: $current.second)
+            PalettePicker(title: "Màu quét / màu phụ", rgb: $current.second)
+            DisclosureGroup("Hologram trang trí · Xem trước") {
+                VStack(alignment: .leading, spacing: 12) {
+                    PalettePicker(title: "Màu sáng mép", rgb: Binding(
+                        get: { current.rim ?? .cyan }, set: { current.rim = $0 }))
+                    HStack {
+                        Text("Độ sáng mép")
+                        Spacer()
+                        Text("\(Int((current.rimStrength ?? 0.6) * 100))%").monospacedDigit()
+                    }
+                    Slider(value: Binding(get: { current.rimStrength ?? 0.6 }, set: { current.rimStrength = $0 }), in: 0...1)
+                    HStack {
+                        Text("Độ mạnh quét")
+                        Spacer()
+                        Text("\(Int((current.scanStrength ?? 1) * 100))%").monospacedDigit()
+                    }
+                    Slider(value: Binding(get: { current.scanStrength ?? 1 }, set: { current.scanStrength = $0 }), in: 0...1)
+                    Text("Dành cho mô hình xem trước và shader trang trí độc lập. Không thay shader định vị hoặc trạng thái hiển thị của game.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(.top, 8)
+            }
             Picker("Hiệu ứng", selection: $current.effect) {
                 ForEach(Effect.allCases) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.menu)
@@ -604,6 +646,10 @@ enum BluShaderIO {
               values.prefix(6).allSatisfy({ (0.0...1.0).contains($0) }),
               (0.5...10.0).contains(p.duration),
               (0.0...1.0).contains(p.intensity), (0.0...1.0).contains(p.scanNoise ?? 0) else { throw ShaderIOError.invalid }
+        let rim = p.rim ?? .cyan
+        guard [rim.r, rim.g, rim.b, p.rimStrength ?? 0.6, p.scanStrength ?? 1].allSatisfy({
+            $0.isFinite && (0.0...1.0).contains($0)
+        }) else { throw ShaderIOError.invalid }
         var clean = p
         clean.name = String(p.name.prefix(80))
         return clean
@@ -665,6 +711,9 @@ enum BluShaderIO {
             {
                 _ColorA ("Main Color", Color) = \(color(p.first))
                 _ColorB ("Secondary Color", Color) = \(color(p.second))
+                _DecorRim ("Decorative Rim Color", Color) = \(color(p.rim ?? .cyan))
+                _DecorRimStrength ("Rim Strength", Range(0,1)) = \(number(p.rimStrength ?? 0.6))
+                _DecorScanStrength ("Scan Strength", Range(0,1)) = \(number(p.scanStrength ?? 1))
                 _Cycle ("Cycle Seconds", Float) = \(number(p.duration))
                 _Glow ("Glow", Range(0,6)) = \(number(p.intensity * 6))
                 _Effect ("Effect Mode", Float) = \(mode)
@@ -682,15 +731,17 @@ enum BluShaderIO {
                     #pragma vertex vert
                     #pragma fragment frag
                     #include "UnityCG.cginc"
-                    float4 _ColorA, _ColorB;
-                    float _Cycle, _Glow, _Effect, _ScanNoise;
-                    struct appdata { float4 vertex : POSITION; float2 uv : TEXCOORD0; };
-                    struct v2f { float4 vertex : SV_POSITION; float2 uv : TEXCOORD0; };
+                    float4 _ColorA, _ColorB, _DecorRim;
+                    float _Cycle, _Glow, _Effect, _ScanNoise, _DecorRimStrength, _DecorScanStrength;
+                    struct appdata { float4 vertex : POSITION; float2 uv : TEXCOORD0; float3 normal : NORMAL; };
+                    struct v2f { float4 vertex : SV_POSITION; float2 uv : TEXCOORD0; float3 worldNormal : TEXCOORD1; float3 worldPos : TEXCOORD2; };
                     v2f vert(appdata v)
                     {
                         v2f o;
                         o.vertex = UnityObjectToClipPos(v.vertex);
                         o.uv = v.uv;
+                        o.worldNormal = UnityObjectToWorldNormal(v.normal);
+                        o.worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
                         return o;
                     }
                     float3 hsv(float h)
@@ -711,12 +762,15 @@ enum BluShaderIO {
                         } else if (_Effect > 2.5) {
                             strength = 0.35 + 0.65 * wave;
                         } else if (_Effect > 1.5) {
-                            float scan = 0.5 + 0.5 * cos((warped - phase) * 6.2831853);
+                            float scan = (0.5 + 0.5 * cos((warped - phase) * 6.2831853)) * saturate(_DecorScanStrength);
                             col = lerp(_ColorA.rgb, _ColorB.rgb, scan);
                             col = lerp(col, float3(1,1,1), pow(scan, 18) * 0.85);
                         } else if (_Effect > 0.5) {
                             col = lerp(_ColorA.rgb, _ColorB.rgb, wave);
                         }
+                        float3 viewDir = normalize(_WorldSpaceCameraPos.xyz - i.worldPos);
+                        float rim = pow(1 - saturate(dot(normalize(i.worldNormal), viewDir)), 3);
+                        col = lerp(col, _DecorRim.rgb, rim * saturate(_DecorRimStrength));
                         return float4(col * strength * (1 + _Glow), 1);
                     }
                     ENDCG
