@@ -210,8 +210,8 @@ private enum SourceCategory: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .opti: return "Opti · Súng"
-        case .shader: return "Shader · Nhân vật"
+        case .opti: return "Opti · Nhân vật"
+        case .shader: return "Shader · Súng"
         case .other: return "Khác"
         }
     }
