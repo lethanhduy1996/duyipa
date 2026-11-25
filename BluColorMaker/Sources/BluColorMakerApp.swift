@@ -212,6 +212,8 @@ struct ContentView: View {
     @State private var message: String?
     @State private var importing = false
     @State private var sourceName: String? = nil
+    @State private var sourceInfo: String? = nil
+    @State private var binaryReference = false
     @State private var shaderExport: ShaderExportItem?
     private static let storageKey = "blu.presets.v1"
     private static func loadPresets() -> [Preset] {
@@ -242,7 +244,7 @@ struct ContentView: View {
                     controls
                     shaderActions
                     presets
-                    Text("Hỗ trợ shader mẫu Blu và cấu hình JSON cho dự án Unity riêng. Không đọc AssetBundle nhị phân hoặc .3105.")
+                    Text("Chỉnh màu mẫu Blu, nhập màu từ shader văn bản hoặc xem thông tin UnityFS. Xuất mã nguồn Unity độc lập, không sửa AssetBundle hoặc patch game.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding(16)
             }
@@ -270,9 +272,17 @@ struct ContentView: View {
                 guard size <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
                 let bytes = try Data(contentsOf: url)
                 guard bytes.count <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
-                let loaded = try BluShaderIO.read(bytes, ext: url.pathExtension.lowercased())
-                current = loaded
-                sourceName = url.lastPathComponent
+                if let header = try BluReferenceHeader.inspect(bytes) {
+                    sourceInfo = header
+                    binaryReference = true
+                    sourceName = url.lastPathComponent
+                } else {
+                    let loaded = try BluShaderIO.readReference(bytes, ext: url.pathExtension.lowercased(), fallback: current)
+                    current = loaded.preset
+                    sourceName = url.lastPathComponent
+                    sourceInfo = loaded.detail
+                    binaryReference = false
+                }
             } catch { message = error.localizedDescription }
         }
         .sheet(item: $shaderExport) { item in
@@ -298,12 +308,23 @@ struct ContentView: View {
                 }.buttonStyle(.borderedProminent)
                 Button {
                     sourceName = "BluNeon.shader (mẫu)"
+                    sourceInfo = nil
+                    binaryReference = false
                 } label: {
                     Text("Dùng mẫu").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered)
             }
-            Text("Nhận .shader mẫu Blu hoặc JSON; nhận diện UnityFS nhưng không chỉnh gói nhị phân.")
-                .font(.caption).foregroundStyle(.secondary)
+            if let info = sourceInfo {
+                Label(info, systemImage: binaryReference ? "doc.text.magnifyingglass" : "checkmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if binaryReference {
+                Text("AssetBundle tham chiếu: chỉ xem thông tin. Màu bên dưới tạo shader độc lập, không ghi vào tệp này.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Nhận .shader mẫu Blu, shader văn bản có thuộc tính Color, JSON và tệp UnityFS tham chiếu.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }.padding(16)
          .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
     }
@@ -319,7 +340,7 @@ struct ContentView: View {
                     shaderExport = ShaderExportItem(url: url)
                 } catch { message = error.localizedDescription }
             } label: {
-                Label("Áp dụng & xuất shader", systemImage: "square.and.arrow.up")
+                Label(binaryReference ? "Tạo shader độc lập" : "Áp dụng & xuất shader", systemImage: "square.and.arrow.up")
                     .font(.headline).frame(maxWidth: .infinity)
             }.buttonStyle(.borderedProminent)
             Text("Xuất mã nguồn mới cho Unity; giữ nguyên tệp đã nhập.")
@@ -413,7 +434,7 @@ enum ShaderIOError: LocalizedError {
         switch self {
         case .tooLarge: return "Tệp vượt quá 1 MB."
         case .binaryBundle: return "Đây là UnityFS AssetBundle đã biên dịch. Ứng dụng chỉ chỉnh thông số shader mẫu độc lập và JSON, không sửa gói nhị phân."
-        case .unsupported: return "Chỉ hỗ trợ preset JSON và shader mẫu Blu do ứng dụng xuất. Không hỗ trợ gói shader nhị phân."
+        case .unsupported: return "Tệp không chứa mẫu Blu hoặc thuộc tính Color trong mã nguồn ShaderLab được hỗ trợ."
         case .invalid: return "Tệp không hợp lệ hoặc cấu hình màu không đúng định dạng."
         }
     }
@@ -444,6 +465,31 @@ enum BluShaderIO {
         }
         // Never carry imported shader code into the exported program.
         return try sanitize(JSONDecoder().decode(Preset.self, from: presetData))
+    }
+    static func readReference(_ data: Data, ext: String, fallback: Preset) throws -> (preset: Preset, detail: String) {
+        if ext == "json" { return (try read(data, ext: ext), "Preset JSON có thể chỉnh sửa") }
+        guard ext == "shader", let source = String(data: data, encoding: .utf8) else { throw ShaderIOError.unsupported }
+        if source.hasPrefix(marker) {
+            return (try read(data, ext: ext), "Mẫu Blu có thể chỉnh sửa")
+        }
+        // Extract only ordinary ShaderLab default Color values, never imported code.
+        let pattern = #"(?m)^\s*(?:\[[^\]\r\n]{1,80}\]\s*)*([A-Za-z_][A-Za-z_0-9]*)\s*\(\s*"[^"\r\n]*"\s*,\s*Color\s*\)\s*=\s*\(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let ns = source as NSString
+        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+        var colors: [(String, RGB)] = []
+        for m in matches.prefix(128) {
+            let values = (2...4).compactMap { Double(ns.substring(with: m.range(at: $0))) }
+            guard values.count == 3, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { continue }
+            colors.append((ns.substring(with: m.range(at: 1)), RGB(values[0], values[1], values[2])))
+        }
+        guard !colors.isEmpty else { throw ShaderIOError.unsupported }
+        var p = fallback
+        let main = colors.first(where: { ["_ColorA", "_BaseColor", "_Color", "_TintColor"].contains($0.0) }) ?? colors[0]
+        let other = colors.first(where: { ["_ColorB", "_ScanColor", "_RimColor"].contains($0.0) && $0.0 != main.0 }) ?? colors.first(where: { $0.0 != main.0 })
+        p.first = main.1
+        p.second = other?.1 ?? main.1
+        return (try sanitize(p), "Đã đọc \(colors.count) giá trị Color. Xuất shader Blu mới, không sao chép mã nguồn gốc.")
     }
     static func render(_ input: Preset) throws -> Data {
         let p = try sanitize(input)
@@ -549,5 +595,38 @@ struct ShaderExportPicker: UIViewControllerRepresentable {
             finished(!urls.isEmpty)
         }
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finished(false) }
+    }
+}
+
+
+// Read-only UnityFS reference header. No decompression or binary writes.
+enum BluReferenceHeader {
+    static func inspect(_ data: Data) throws -> String? {
+        let b = Array(data.prefix(4096))
+        guard b.starts(with: Array("UnityFS".utf8)) else { return nil }
+        var pos = 0
+        func text() throws -> String {
+            guard pos < b.count, let end = b[pos...].firstIndex(of: 0),
+                  end - pos <= 128,
+                  let value = String(bytes: b[pos..<end], encoding: .utf8) else { throw ShaderIOError.invalid }
+            pos = end + 1
+            return value
+        }
+        func integer(_ count: Int) throws -> UInt64 {
+            guard pos + count <= b.count else { throw ShaderIOError.invalid }
+            var n: UInt64 = 0
+            for x in b[pos..<(pos + count)] { n = (n << 8) | UInt64(x) }
+            pos += count
+            return n
+        }
+        guard try text() == "UnityFS" else { throw ShaderIOError.invalid }
+        let version = try integer(4)
+        _ = try text()
+        let engine = try text()
+        let declared = try integer(8)
+        guard version >= 6 && version <= 9, declared == UInt64(data.count) else {
+            throw ShaderIOError.invalid
+        }
+        return "UnityFS v\(version) · Unity \(engine) · \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))"
     }
 }
