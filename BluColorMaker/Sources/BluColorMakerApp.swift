@@ -52,6 +52,7 @@ struct Preset: Codable, Identifiable {
     var effect: Effect = .scan
     var duration: Double = 3
     var intensity: Double = 0.7
+    var scanNoise: Double? = 0.15
     static var initial: [Preset] {
         [
             Preset(name: "Tím hồng", first: RGB(0.6,0.1,1), second: .pink, effect: .blend),
@@ -95,13 +96,44 @@ struct NeonPreview: View {
             frame(phase: t)
         }
     }
+    private func scanCanvas(phase: Double) -> some View {
+        Canvas { context, size in
+            let cols = 24, rows = 36
+            let w = size.width / CGFloat(cols)
+            let h = size.height / CGFloat(rows)
+            let noise = max(0, min(1, preset.scanNoise ?? 0))
+            for y in 0..<rows {
+                for x in 0..<cols {
+                    let u = (Double(x) + 0.5) / Double(cols)
+                    let v = 1 - (Double(y) + 0.5) / Double(rows)
+                    let n = 0.62 * sin((u * 7 + v * 3 + phase) * 2 * .pi)
+                        + 0.38 * sin((u * 13 - v * 9 - phase * 2) * 2 * .pi)
+                    let warped = v + noise * 0.25 * n
+                    let scan = 0.5 + 0.5 * cos((warped - phase) * 2 * .pi)
+                    let c: Color
+                    if preset.effect == .rainbow {
+                        let rawHue = phase + warped * 0.3
+                        c = Color(hue: rawHue - floor(rawHue), saturation: 1, brightness: 1)
+                    } else {
+                        let white = pow(scan, 18) * 0.85
+                        func channel(_ a: Double, _ b: Double) -> Double {
+                            let mixed = a + (b - a) * scan
+                            return mixed + (1 - mixed) * white
+                        }
+                        c = Color(red: channel(preset.first.r, preset.second.r),
+                                  green: channel(preset.first.g, preset.second.g),
+                                  blue: channel(preset.first.b, preset.second.b))
+                    }
+                    context.fill(Path(CGRect(x: CGFloat(x)*w, y: CGFloat(y)*h, width: w+0.5, height: h+0.5)), with: .color(c))
+                }
+            }
+        }
+    }
     private func frame(phase: Double) -> some View {
         let wave = (1 - cos(phase * 2 * .pi)) / 2
         let mixed = mix(preset.first, preset.second, wave)
         let main = preset.effect == .rainbow ? Color(hue: phase, saturation: 1, brightness: 1) :
             (preset.effect == .blend ? mixed : preset.first.color)
-        let secondary = preset.effect == .rainbow ? Color(hue: (phase+0.36).truncatingRemainder(dividingBy: 1), saturation: 1, brightness: 1) : preset.second.color
-        let position = preset.effect == .scan ? -0.8 + phase * 2.6 : 0.5
         let alpha = preset.effect == .pulse ? 0.45 + 0.55*wave : 1.0
         let glow = preset.intensity * 18
         let showScan = preset.effect == .scan || preset.effect == .rainbow
@@ -122,11 +154,7 @@ struct NeonPreview: View {
                 PreviewCharacter().fill(main).blur(radius: glow * 0.65).opacity(0.75)
                 PreviewCharacter().fill(main)
                 if showScan {
-                    PreviewCharacter().fill(
-                        LinearGradient(colors: [main, secondary, .white, main, secondary],
-                                       startPoint: UnitPoint(x: 0.2, y: position-0.65),
-                                       endPoint: UnitPoint(x: 0.8, y: position+0.65))
-                    )
+                    scanCanvas(phase: phase).mask(PreviewCharacter().fill(.white))
                 }
                 PreviewCharacter().stroke(Color.white.opacity(0.25 + preset.intensity * 0.5), lineWidth: 1.3)
             }
@@ -274,7 +302,7 @@ struct ContentView: View {
                     Text("Dùng mẫu").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered)
             }
-            Text("Nhận .shader do app xuất hoặc preset JSON.")
+            Text("Nhận .shader mẫu Blu hoặc JSON; nhận diện UnityFS nhưng không chỉnh gói nhị phân.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(16)
          .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
@@ -319,6 +347,16 @@ struct ContentView: View {
                 Text("\(Int(current.intensity * 100))%").monospacedDigit().foregroundStyle(.secondary)
             }
             Slider(value: $current.intensity, in: 0...1)
+            if current.effect == .scan || current.effect == .rainbow {
+                HStack {
+                    Text("Độ nhiễu màu quét")
+                    Spacer()
+                    Text("\(Int((current.scanNoise ?? 0) * 100))%").monospacedDigit().foregroundStyle(.secondary)
+                }
+                Slider(value: Binding(get: { current.scanNoise ?? 0 }, set: { current.scanNoise = $0 }), in: 0...1, step: 0.05)
+                Text("0%: quét mượt · 100%: vệt màu gợn mạnh")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             TextField("Tên mẫu", text: $current.name).textFieldStyle(.roundedBorder)
             HStack {
                 Button(action: save) { Label("Lưu mẫu", systemImage: "heart").frame(maxWidth: .infinity) }
@@ -370,10 +408,11 @@ struct ContentView: View {
 
 // Independent Unity shader template and round-trip preset format.
 enum ShaderIOError: LocalizedError {
-    case tooLarge, unsupported, invalid
+    case tooLarge, unsupported, invalid, binaryBundle
     var errorDescription: String? {
         switch self {
         case .tooLarge: return "Tệp vượt quá 1 MB."
+        case .binaryBundle: return "Đây là UnityFS AssetBundle đã biên dịch. Ứng dụng chỉ chỉnh thông số shader mẫu độc lập và JSON, không sửa gói nhị phân."
         case .unsupported: return "Chỉ hỗ trợ preset JSON và shader mẫu Blu do ứng dụng xuất. Không hỗ trợ gói shader nhị phân."
         case .invalid: return "Tệp không hợp lệ hoặc cấu hình màu không đúng định dạng."
         }
@@ -383,16 +422,17 @@ enum ShaderIOError: LocalizedError {
 enum BluShaderIO {
     static let marker = "// BluColorMakerPresetV2:"
     static func sanitize(_ p: Preset) throws -> Preset {
-        let values = [p.first.r, p.first.g, p.first.b, p.second.r, p.second.g, p.second.b, p.duration, p.intensity]
+        let values = [p.first.r, p.first.g, p.first.b, p.second.r, p.second.g, p.second.b, p.duration, p.intensity, p.scanNoise ?? 0]
         guard values.allSatisfy({ $0.isFinite }),
               values.prefix(6).allSatisfy({ (0.0...1.0).contains($0) }),
               (0.5...10.0).contains(p.duration),
-              (0.0...1.0).contains(p.intensity) else { throw ShaderIOError.invalid }
+              (0.0...1.0).contains(p.intensity), (0.0...1.0).contains(p.scanNoise ?? 0) else { throw ShaderIOError.invalid }
         var clean = p
         clean.name = String(p.name.prefix(80))
         return clean
     }
     static func read(_ data: Data, ext: String) throws -> Preset {
+        if data.starts(with: Data("UnityFS".utf8)) || data.starts(with: Data("UnityRaw".utf8)) || data.starts(with: Data("UnityWeb".utf8)) { throw ShaderIOError.binaryBundle }
         if ext == "json" {
             return try sanitize(JSONDecoder().decode(Preset.self, from: data))
         }
@@ -426,6 +466,7 @@ enum BluShaderIO {
                 _Cycle ("Cycle Seconds", Float) = \(number(p.duration))
                 _Glow ("Glow", Range(0,6)) = \(number(p.intensity * 6))
                 _Effect ("Effect Mode", Float) = \(mode)
+                _ScanNoise ("Scan Noise", Range(0,1)) = \(number(p.scanNoise ?? 0))
             }
             SubShader
             {
@@ -440,7 +481,7 @@ enum BluShaderIO {
                     #pragma fragment frag
                     #include "UnityCG.cginc"
                     float4 _ColorA, _ColorB;
-                    float _Cycle, _Glow, _Effect;
+                    float _Cycle, _Glow, _Effect, _ScanNoise;
                     struct appdata { float4 vertex : POSITION; float2 uv : TEXCOORD0; };
                     struct v2f { float4 vertex : SV_POSITION; float2 uv : TEXCOORD0; };
                     v2f vert(appdata v)
@@ -458,14 +499,17 @@ enum BluShaderIO {
                     {
                         float phase = frac(_Time.y / max(0.5, _Cycle));
                         float wave = 0.5 - 0.5 * cos(phase * 6.2831853);
+                        float n = 0.62 * sin((i.uv.x * 7 + i.uv.y * 3 + phase) * 6.2831853)
+                            + 0.38 * sin((i.uv.x * 13 - i.uv.y * 9 - phase * 2) * 6.2831853);
+                        float warped = i.uv.y + saturate(_ScanNoise) * 0.25 * n;
                         float3 col = _ColorA.rgb;
                         float strength = 1.0;
                         if (_Effect > 3.5) {
-                            col = hsv(phase + i.uv.y * 0.3);
+                            col = hsv(phase + warped * 0.3);
                         } else if (_Effect > 2.5) {
                             strength = 0.35 + 0.65 * wave;
                         } else if (_Effect > 1.5) {
-                            float scan = 0.5 + 0.5 * cos((i.uv.y - phase) * 6.2831853);
+                            float scan = 0.5 + 0.5 * cos((warped - phase) * 6.2831853);
                             col = lerp(_ColorA.rgb, _ColorB.rgb, scan);
                             col = lerp(col, float3(1,1,1), pow(scan, 18) * 0.85);
                         } else if (_Effect > 0.5) {
