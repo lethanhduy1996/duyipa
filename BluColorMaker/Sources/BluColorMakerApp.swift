@@ -211,6 +211,7 @@ struct ContentView: View {
     @State private var document = PresetDocument()
     @State private var message: String?
     @State private var importing = false
+    @State private var importError: String? = nil
     @State private var sourceName: String? = nil
     @State private var sourceInfo: String? = nil
     @State private var binaryReference = false
@@ -263,15 +264,24 @@ struct ContentView: View {
             case .failure(let error): message = error.localizedDescription
             }
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             do {
                 guard let url = try result.get().first else { return }
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
-                let bytes = try Data(contentsOf: url)
-                guard bytes.count <= 1024 * 1024 else { throw ShaderIOError.tooLarge }
+                importError = nil
+                let limit = 32 * 1024 * 1024
+                let info = try url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
+                guard info.isDirectory != true else { throw ShaderIOError.invalid }
+                if let size = info.fileSize, size > limit { throw ShaderIOError.tooLarge }
+                let file = try FileHandle(forReadingFrom: url)
+                defer { try? file.close() }
+                var bytes = Data()
+                while bytes.count <= limit {
+                    guard let chunk = try file.read(upToCount: min(256 * 1024, limit + 1 - bytes.count)), !chunk.isEmpty else { break }
+                    bytes.append(chunk)
+                }
+                guard bytes.count <= limit else { throw ShaderIOError.tooLarge }
                 if let header = try BluReferenceHeader.inspect(bytes) {
                     sourceInfo = header
                     binaryReference = true
@@ -283,7 +293,9 @@ struct ContentView: View {
                     sourceInfo = loaded.detail
                     binaryReference = false
                 }
-            } catch { message = error.localizedDescription }
+            } catch {
+                importError = error.localizedDescription
+            }
         }
         .sheet(item: $shaderExport) { item in
             ShaderExportPicker(url: item.url) { success in
@@ -302,17 +314,22 @@ struct ContentView: View {
                 .font(.subheadline).foregroundStyle(.secondary)
                 .lineLimit(2)
             HStack {
-                Button { importing = true } label: {
+                Button { importError = nil; importing = true } label: {
                     Label("Nhập tệp", systemImage: "folder.badge.plus")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent)
                 Button {
                     sourceName = "BluNeon.shader (mẫu)"
                     sourceInfo = nil
+                    importError = nil
                     binaryReference = false
                 } label: {
                     Text("Dùng mẫu").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered)
+            }
+            if let error = importError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
             }
             if let info = sourceInfo {
                 Label(info, systemImage: binaryReference ? "doc.text.magnifyingglass" : "checkmark.circle")
@@ -322,7 +339,7 @@ struct ContentView: View {
                 Text("AssetBundle tham chiếu: chỉ xem thông tin. Màu bên dưới tạo shader độc lập, không ghi vào tệp này.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Nhận .shader mẫu Blu, shader văn bản có thuộc tính Color, JSON và tệp UnityFS tham chiếu.")
+                Text("Chọn tệp tối đa 32 MB, kể cả đuôi lạ. Hỗ trợ shader văn bản, JSON và đọc thông tin UnityFS.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(16)
@@ -432,7 +449,7 @@ enum ShaderIOError: LocalizedError {
     case tooLarge, unsupported, invalid, binaryBundle
     var errorDescription: String? {
         switch self {
-        case .tooLarge: return "Tệp vượt quá 1 MB."
+        case .tooLarge: return "Tệp vượt quá 32 MB."
         case .binaryBundle: return "Đây là UnityFS AssetBundle đã biên dịch. Ứng dụng chỉ chỉnh thông số shader mẫu độc lập và JSON, không sửa gói nhị phân."
         case .unsupported: return "Tệp không chứa mẫu Blu hoặc thuộc tính Color trong mã nguồn ShaderLab được hỗ trợ."
         case .invalid: return "Tệp không hợp lệ hoặc cấu hình màu không đúng định dạng."
