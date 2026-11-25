@@ -217,6 +217,8 @@ struct ContentView: View {
     @State private var sourceName: String? = nil
     @State private var sourceInfo: String? = nil
     @State private var binaryReference = false
+    @State private var decorativeBundle: DecorativeBundle?
+    @State private var selectedFieldID: Int?
     @State private var shaderExport: ShaderExportItem?
     private static let storageKey = "blu.presets.v1"
     private static func loadPresets() -> [Preset] {
@@ -247,7 +249,7 @@ struct ContentView: View {
                     controls
                     shaderActions
                     presets
-                    Text("Chỉnh màu mẫu Blu, nhập màu từ shader văn bản hoặc xem thông tin UnityFS. Xuất mã nguồn Unity độc lập, không sửa AssetBundle hoặc patch game.")
+                    Text("Chỉnh mẫu Blu hoặc thuộc tính RGB trang trí của UnityFS được hỗ trợ. Không chỉnh chương trình shader hoặc tạo patch game.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding(16)
             }
@@ -277,7 +279,7 @@ struct ContentView: View {
         .sheet(item: $shaderExport) { item in
             ShaderExportPicker(url: item.url) { success in
                 shaderExport = nil
-                if success { message = "Đã xuất mã nguồn .shader" }
+                if success { message = "Đã xuất tệp mới" }
             }
         }
         .alert("Blu Color Maker", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -304,6 +306,8 @@ struct ContentView: View {
         sourceName = nil
         sourceInfo = nil
         binaryReference = false
+        decorativeBundle = nil
+        selectedFieldID = nil
         let accessURL = parent ?? url
         let scoped = accessURL.startAccessingSecurityScopedResource()
         defer { if scoped { accessURL.stopAccessingSecurityScopedResource() } }
@@ -324,6 +328,12 @@ struct ContentView: View {
             if let header = try BluReferenceHeader.inspect(bytes) {
                 sourceInfo = header
                 binaryReference = true
+                do {
+                    let bundle = try DecorativeBundle(bytes)
+                    decorativeBundle = bundle
+                    selectedFieldID = bundle.fields.first?.id
+                    if bundle.fields.isEmpty { importError = BundleColorError.noColors.localizedDescription }
+                } catch { importError = error.localizedDescription }
             } else {
                 let loaded = try BluShaderIO.readReference(bytes, ext: url.pathExtension.lowercased(), fallback: current)
                 current = loaded.preset
@@ -349,6 +359,8 @@ struct ContentView: View {
                     sourceInfo = nil
                     importError = nil
                     binaryReference = false
+                    decorativeBundle = nil
+                    selectedFieldID = nil
                 } label: {
                     Text("Dùng mẫu").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered)
@@ -389,10 +401,21 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if binaryReference {
-                Text("AssetBundle tham chiếu: chỉ xem thông tin. Màu bên dưới tạo shader độc lập, không ghi vào tệp này.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let bundle = decorativeBundle, !bundle.fields.isEmpty {
+                    Text("Thuộc tính màu trang trí").font(.subheadline.weight(.medium))
+                    Picker("Vật liệu / màu", selection: $selectedFieldID) {
+                        ForEach(bundle.fields) { field in
+                            Text(field.title).tag(Optional(field.id))
+                        }
+                    }.pickerStyle(.menu)
+                    Text("Chỉ đổi RGB của thuộc tính đã chọn. Giữ nguyên alpha và mã shader; không áp dụng tốc độ, quét hoặc HDR vào UnityFS.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Tệp này chưa có thuộc tính màu trang trí được hỗ trợ. Không thể xuất UnityFS đã sửa.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
-                Text("Chọn tệp tối đa 32 MB, kể cả đuôi lạ. Hỗ trợ shader văn bản, JSON và đọc thông tin UnityFS.")
+                Text("Chọn tệp tối đa 32 MB, kể cả đuôi lạ. Hỗ trợ shader văn bản, JSON và UnityFS có material tương thích.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(16)
@@ -402,18 +425,29 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 do {
-                    let data = try BluShaderIO.render(current)
+                    let data: Data
+                    let filename: String
+                    if binaryReference {
+                        guard let bundle = decorativeBundle, let id = selectedFieldID,
+                              let name = sourceName, !name.isEmpty else { throw BundleColorError.noColors }
+                        data = try bundle.export(fieldID: id, red: current.first.r, green: current.first.g, blue: current.first.b)
+                        filename = name
+                    } else {
+                        data = try BluShaderIO.render(current)
+                        filename = "BluNeon.shader"
+                    }
                     let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
                     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    let url = dir.appendingPathComponent("BluNeon.shader")
+                    let url = dir.appendingPathComponent(filename)
                     try data.write(to: url, options: .atomic)
                     shaderExport = ShaderExportItem(url: url)
                 } catch { message = error.localizedDescription }
             } label: {
-                Label(binaryReference ? "Tạo shader độc lập" : "Áp dụng & xuất shader", systemImage: "square.and.arrow.up")
+                Label(binaryReference ? "Áp dụng & xuất UnityFS" : "Áp dụng & xuất shader", systemImage: "square.and.arrow.up")
                     .font(.headline).frame(maxWidth: .infinity)
             }.buttonStyle(.borderedProminent)
-            Text("Xuất mã nguồn mới cho Unity; giữ nguyên tệp đã nhập.")
+             .disabled(binaryReference && (decorativeBundle == nil || selectedFieldID == nil))
+            Text(binaryReference ? "Xuất bản sao UnityFS giữ nguyên tên tệp gốc. Chỉ thay RGB của material được chọn." : "Xuất mã nguồn mới cho Unity; giữ nguyên tệp đã nhập.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(16)
          .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
